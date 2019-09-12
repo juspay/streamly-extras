@@ -7,20 +7,22 @@
 
 module Streamly.Extra where
 
-import qualified Streamly as S
-import qualified Streamly.Prelude as SP
-import qualified Streamly.Fold as FL
-import Streamly.Internal
-import qualified Data.Map.Strict as Map
 import Control.Arrow
-import Control.Monad.IO.Class
-import Control.Monad
-import Data.IORef
 import Control.Concurrent hiding (yield)
+import Control.Monad
+import Control.Monad.IO.Class
+import Data.IORef
+import Data.Map.Strict (Map)
 import qualified Control.Concurrent.STM.TChan as TChan
 import qualified Control.Monad.STM as STM
-import qualified Data.Set as Set
 import qualified Data.Internal.SortedSet as ZSet
+import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
+import qualified Streamly as S
+import qualified Streamly.Fold as FL
+import qualified Streamly.Internal as SI
+import qualified Streamly.Prelude as SP
+import Streamly.Internal
 
 -- | Group the stream into a smaller set of keys and fold elements of a specific key
 demuxByM
@@ -251,7 +253,9 @@ sampleOn src pulse =
 --   using the latest value from the slower stream(the second argument)
 --   Note : Doesn't produce values until one value is yield'ed from each stream
 --   everyNSecsIncBy n i =
---     SP.iterateM (\j -> threadDelay (n * 1000000) >> pure (i + j)) (pure 0)
+--     SP.iterateM
+--       (\j -> threadDelay (n * 1000000) >> pure (i + j))
+--       (pure 0)
 --   everyNSecondsAddOrSub n =
 --     snd <$>
 --       SP.iterateM
@@ -290,10 +294,97 @@ applyWithLatest src pulse =
   -- First is the latest value of pulse,
   -- second is the value which to be yield'ed
   begin = pure (Nothing, Nothing)
-  step ((Just f), _) (Left a) = pure ((Just f), Just (f a))
+  step (Just f, _) (Left a) = pure (Just f, Just (f a))
   step (Nothing, _) (Left _) = pure (Nothing, Nothing)
   step _ (Right f') = pure (Just f', Nothing)
   done (_, out) = pure out
+
+
+-- | Stream which races a function stream and a argument stream
+--   and uses the latest value of the other stream whenever any of the stream yields a value
+--   Note : Doesn't produce values until one value is yield'ed from each stream
+--   everyNSecsIncBy n i =
+--     SP.iterateM
+--       (\j -> threadDelay (n * 1000000) >> pure (i + j))
+--       (pure 0)
+--   everyNSecondsAddOrSub n =
+--     snd <$>
+--       SP.iterateM
+--         (\(b, _) -> threadDelay (n * 1000000) >> pure (if b then (False, (\x -> (x,2+x))) else (True, (\x -> (x,x-2)) )))
+--         (pure (True, (\x -> (x,x-2)) ))
+--   SP.mapM_ print $ zipAsyncly' (everyNSecsIncBy 4 2)  (everyNSecondsAddOrSub 1)
+--   outputs :
+--   (0,-2)
+--   (0,2)
+--   (0,-2)
+--   (0,2)
+--   (2,4)
+--   (2,0)
+--   (2,4)
+--   (2,0)
+--   (2,4)
+--   (4,6)
+--   (4,2)
+--   (4,6)
+--   (4,2)
+--   (4,6)
+--   (6,8)
+--   (6,4)
+--   (6,8)
+--   (6,4)
+--   (6,8)
+--   (8,10)
+--   (8,6)
+--   (8,10)
+--   SP.mapM_ print $ zipAsyncly' (everyNSecsIncBy 1 2)  (everyNSecondsAddOrSub 4)
+--   (0,-2)
+--   (2,0)
+--   (4,2)
+--   (6,4)
+--   (6,8)
+--   (8,10)
+--   (10,12)
+--   (12,14)
+--   (14,16)
+--   (14,12)
+--   (16,14)
+--   (18,16)
+--   (20,18)
+--   (22,20)
+--   (22,24)
+--   (24,26)
+--   (26,28)
+--   (28,30)
+--   (30,32)
+zipAsyncly'
+  :: S.MonadAsync m
+  => S.SerialT m a
+  -> S.SerialT m (a -> b)
+  -> S.SerialT m b
+zipAsyncly' aSrc fSrc =
+  SP.mapMaybe id $
+    FL.scanl' fld combined
+  where
+  combined =
+    S.serially $ (Left <$> aSrc) `S.async` (Right <$> fSrc)
+  fld = Fold step begin done
+  -- First is the latest value of a -> b,
+  -- Second is the latest value of a,
+  -- Third is the value which to be yield'ed
+  begin = pure (Nothing, Nothing, Nothing)
+  step (maybeF, _, _) (Left a) =
+    pure $
+      maybe
+        (Nothing, Just a, Nothing)
+        (\f -> (Just f, Just a, Just (f a)))
+        maybeF
+  step (_, maybeA, _) (Right f) =
+    pure $
+      maybe
+        (Just f, Nothing, Nothing)
+        (\a -> (Just f, Just a, Just (f a)))
+        maybeA
+  done (_, _, out) = pure out
 
 -- | Group incoming elements into buckets of @tickInterval × timeThreshold@
 --   microseconds and output only the first occurrence of each element.
@@ -331,3 +422,38 @@ firstOccWithin tickInterval timeThreshold src
 
   srcWithTicker =
     src `applyWithLatest` ((\i a -> (a, i)) <$> ticker)
+
+groupConsecutiveBy
+  :: Eq b
+  => Monad m
+  => (a -> b)
+  -> FL.Fold m (Maybe a) (Maybe [a])
+groupConsecutiveBy f = SI.Fold step begin end
+  where
+  -- State is a tuple of 3 elements
+  -- First is the optional Last Id we have seen.
+  -- Second is the accumulated a's for the identifier represented by the first element
+  -- Third is a Maybe [a], if Just xs then it is a completed set of a's
+  -- Else if Nothing, it means that the set of a's seen till now is not completed
+  begin = pure (Nothing, [], Nothing)
+  end (_, _, maybeXS) = pure maybeXS
+  step (Just oldId, oldXS, _) (Just newElem)
+    | oldId == f newElem = pure (Just oldId, newElem : oldXS, Nothing)
+    | otherwise = pure (Just (f newElem), [newElem], Just oldXS)
+  step (Just _, oldXS, _) Nothing = pure (Nothing, [], Just oldXS)
+  step (Nothing, _, _) maybeNewElem =
+    maybe
+      (pure (Nothing, [], Nothing))
+      (\newElem -> pure (Just (f newElem), [newElem], Nothing))
+      maybeNewElem
+
+counts
+  :: Applicative m
+  => Ord a
+  => FL.Fold m a (Map a Int)
+counts = SI.Fold step begin end
+  where
+  step x a =
+    pure $ Map.alter (Just . maybe 1 (+1)) a x
+  begin = pure mempty
+  end = pure
