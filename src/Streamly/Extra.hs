@@ -249,6 +249,24 @@ sampleOn src pulse =
   begin = pure (Nothing, Nothing)
   done (_, out) = pure out
 
+applyWithLatestM
+  :: S.MonadAsync m
+  => (a -> b -> m c)
+  -> S.SerialT m a
+  -> S.SerialT m b
+  -> S.SerialT m c
+applyWithLatestM f s1 s2 =
+  SP.mapMaybe id $
+    FL.scanl' fld combined
+  where
+  combined =
+    S.serially $ (Left <$> s1) `S.async` (Right <$> s2)
+  fld = Fold step begin done
+  begin = pure (Nothing, Nothing)
+  step (Just b, _) (Left a) = (Just b,) . Just <$> f a b
+  step (Nothing, _) (Left a) = pure (Nothing, Nothing)
+  step _ (Right b) = pure (Just b, Nothing)
+  done (_, out) = pure out
 -- | Stream which produces values as fast as the faster stream(the first argument)
 --   using the latest value from the slower stream(the second argument)
 --   Note : Doesn't produce values until one value is yield'ed from each stream
