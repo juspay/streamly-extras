@@ -1,5 +1,7 @@
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE PartialTypeSignatures #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TupleSections #-}
@@ -23,6 +25,8 @@ import qualified Streamly.Fold as FL
 import qualified Streamly.Internal as SI
 import qualified Streamly.Prelude as SP
 import Streamly.Internal
+import Data.Function
+import Data.Functor
 
 -- | Group the stream into a smaller set of keys and fold elements of a specific key
 demuxByM
@@ -475,3 +479,28 @@ counts = SI.Fold step begin end
     pure $ Map.alter (Just . maybe 1 (+1)) a x
   begin = pure mempty
   end = pure
+
+data Direction = IN | OUT deriving (Show)
+withThroughputGauge
+  :: forall m a b tag
+  . Applicative m
+  => S.MonadAsync m
+  => tag
+  -> (tag -> Direction -> m ())
+  -> (S.SerialT m a -> S.SerialT m b)
+  -> S.SerialT m a
+  -> S.SerialT m b
+withThroughputGauge tag recordMeasurement f =
+  measureAndRecord OUT . f . measureAndRecord IN
+  where
+  measureAndRecord :: Direction -> S.SerialT m c -> S.SerialT m c
+  measureAndRecord direction src =
+    SP.mapMaybe id $
+      FL.scanl' (SI.Fold step begin end) withTimer
+    where
+    step _ Nothing = recordMeasurement tag direction $> (0, Nothing)
+    step (count, _) (Just a) = pure (count + 1, Just a)
+    begin = pure (0, Nothing)
+    end = pure . snd
+    withTimer = (Just <$> src) `S.async` (Nothing <$ timeout)
+    timeout = SP.repeatM $ liftIO $ threadDelay 1000000
