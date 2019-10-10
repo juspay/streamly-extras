@@ -150,6 +150,23 @@ collectTillEndOrTimeout keyFn isEnd timeout src =
         src
     incompletedSessionsStream c = SP.repeatM (liftIO $ STM.atomically $ TChan.readTChan c)
 
+runAllWith
+  :: (forall c. S.SerialT IO c -> S.SerialT IO c -> S.SerialT IO c)
+  -> [ S.SerialT IO a -> S.SerialT IO () ]
+  -> S.SerialT IO a
+  -> S.SerialT IO ()
+runAllWith combine fs src =
+  do
+    chan <- liftIO $ do
+      chan <- TChan.newBroadcastTChanIO
+      forkIO $
+        SP.mapM_ (STM.atomically . TChan.writeTChan chan) src
+      pure chan
+    SP.foldMapWith combine
+      (\f -> do
+        chan' <- liftIO $ STM.atomically $ TChan.dupTChan chan
+        f (SP.repeatM ( STM.atomically $ TChan.readTChan chan'))) fs
+
 duplicate
   :: MonadIO m
   => S.SerialT IO a
@@ -203,16 +220,6 @@ firstOcc =
   begin =
     pure (Set.empty, Nothing)
   end = snd >>> pure
-
-runAllWith
-  :: (forall c. S.SerialT IO c -> S.SerialT IO c -> S.SerialT IO c)
-  -> [ S.SerialT IO a -> S.SerialT IO () ]
-  -> S.SerialT IO a
-  -> S.SerialT IO ()
-runAllWith _ [] _ = pure ()
-runAllWith run (f:fs) src = do
-  (s1, s2) <- liftIO $ duplicate src
-  run (f s1) (runAllWith run fs s2)
 
 -- | Stream which samples from the latest value from the first stream at times when the second stream yields
 --   Note : Doesn't produce values until one value is yield'ed from each stream
@@ -481,12 +488,13 @@ counts = SI.Fold step begin end
   end = pure
 
 data Direction = IN | OUT deriving (Show)
+type Logger tag m = tag -> Direction -> m ()
 withThroughputGauge
   :: forall m a b tag
   . Applicative m
   => S.MonadAsync m
   => tag
-  -> (tag -> Direction -> m ())
+  -> Logger tag m
   -> (S.SerialT m a -> S.SerialT m b)
   -> S.SerialT m a
   -> S.SerialT m b

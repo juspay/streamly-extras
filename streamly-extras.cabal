@@ -61,10 +61,11 @@ library
   -- other-extensions:
 
   -- Other library packages from which modules are imported.
-  build-depends:       base 
-               ,       containers
-               ,       streamly
+  build-depends: base
+               , containers
+               , streamly
                , stm
+               , mtl
 
   -- Directories containing source files.
   hs-source-dirs:      src
