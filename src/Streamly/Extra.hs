@@ -27,6 +27,7 @@ import qualified Streamly.Prelude as SP
 import Streamly.Internal
 import Data.Function
 import Data.Functor
+import Control.Monad.Reader.Class
 
 -- | Group the stream into a smaller set of keys and fold elements of a specific key
 demuxByM
@@ -487,14 +488,39 @@ counts = SI.Fold step begin end
   begin = pure mempty
   end = pure
 
-data Direction = IN | OUT deriving (Show)
-type Logger tag m = tag -> Direction -> m ()
+data Direction = IN | OUT deriving (Show, Eq, Ord)
+type Logger tag = tag -> Direction -> Int -> IO ()
+
+withRateGauge
+  :: forall m a b tag
+  . Applicative m
+  => S.MonadAsync m
+  => MonadReader (Logger tag) m
+  => tag
+  -> S.SerialT m a
+  -> S.SerialT m a
+withRateGauge tag src = do
+  logger <- ask
+  measureAndRecord IN logger
+  where
+  measureAndRecord :: Direction -> Logger tag -> S.SerialT m a
+  measureAndRecord direction logger =
+    SP.mapMaybe id $
+      FL.scanl' (SI.Fold step begin end) withTimer
+    where
+    step (count, _) Nothing = liftIO (logger tag direction count) $> (0, Nothing)
+    step (count, _) (Just a) = pure (count + 1, Just a)
+    begin = pure (0, Nothing)
+    end = pure . snd
+    withTimer = (Just <$> src) `S.async` (Nothing <$ timeout)
+    timeout = SP.repeatM $ liftIO $ threadDelay 1000000
+
 withThroughputGauge
   :: forall m a b tag
   . Applicative m
   => S.MonadAsync m
   => tag
-  -> Logger tag m
+  -> Logger tag
   -> (S.SerialT m a -> S.SerialT m b)
   -> S.SerialT m a
   -> S.SerialT m b
@@ -506,7 +532,7 @@ withThroughputGauge tag recordMeasurement f =
     SP.mapMaybe id $
       FL.scanl' (SI.Fold step begin end) withTimer
     where
-    step _ Nothing = recordMeasurement tag direction $> (0, Nothing)
+    step (count, _) Nothing = liftIO (recordMeasurement tag direction count) $> (0, Nothing)
     step (count, _) (Just a) = pure (count + 1, Just a)
     begin = pure (0, Nothing)
     end = pure . snd

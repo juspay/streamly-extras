@@ -66,9 +66,28 @@ library
                , streamly
                , stm
                , mtl
+               , monad-control
 
   -- Directories containing source files.
   hs-source-dirs:      src
 
   -- Base language which the package is written in.
   default-language:    Haskell2010
+
+flag dev
+  default: False
+executable examples
+  hs-source-dirs: test, src
+  main-is: Main.hs
+  build-depends: 
+      streamly-extras
+    , base
+    , containers
+    , stm
+    , streamly
+    , mtl
+    , monad-control
+  if flag(dev)
+    buildable: True
+  else
+    buildable: False
