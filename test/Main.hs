@@ -27,9 +27,12 @@ stdErrLogger tag dir i = putStrLn $ tag <> " " <> acting <> " at the rate of " <
   acting = if dir == IN  then "consuming" else "producing"
 
 main :: IO ()
-main = runReaderT (SP.drain pipeline) stdErrLogger
+main =
+  runReaderT
+    (SP.drain pipeline)
+    (LoggerConfig stdErrLogger 5.0)
   where
-  pipeline = (double . filterEven) mainStream
+  pipeline = (triple . filterEven) mainStream
   mainStream = withRateGauge "src" (src (100,1000000))
   filterEven = withRateGauge "filter" . SP.filter even
-  double = withRateGauge "replicate" . SP.concatMap (\a -> SP.fromList [a,a])
+  triple = withRateGauge "replicate" . SP.concatMap (\a -> SP.fromList [a,a,a])

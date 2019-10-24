@@ -1,7 +1,8 @@
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE PartialTypeSignatures #-}
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TupleSections #-}
@@ -28,6 +29,7 @@ import Streamly.Internal
 import Data.Function
 import Data.Functor
 import Control.Monad.Reader.Class
+import Streamly.Time.Units
 
 -- | Group the stream into a smaller set of keys and fold elements of a specific key
 demuxByM
@@ -490,21 +492,24 @@ counts = SI.Fold step begin end
 
 data Direction = IN | OUT deriving (Show, Eq, Ord)
 type Logger tag = tag -> Direction -> Int -> IO ()
+data LoggerConfig tag
+  = LoggerConfig
+  { logger :: Logger tag
+  , samplingRate :: Double {-Rate of measurement in seconds-}}
 
 withRateGauge
   :: forall m a b tag
   . Applicative m
   => S.MonadAsync m
-  => MonadReader (Logger tag) m
+  => MonadReader (LoggerConfig tag) m
   => tag
   -> S.SerialT m a
   -> S.SerialT m a
-withRateGauge tag src = do
-  logger <- ask
-  measureAndRecord IN logger
+withRateGauge tag src =
+  ask >>= measureAndRecord IN
   where
-  measureAndRecord :: Direction -> Logger tag -> S.SerialT m a
-  measureAndRecord direction logger =
+  measureAndRecord :: Direction -> LoggerConfig tag -> S.SerialT m a
+  measureAndRecord direction (LoggerConfig { logger, samplingRate }) =
     SP.mapMaybe id $
       FL.scanl' (SI.Fold step begin end) withTimer
     where
@@ -513,7 +518,7 @@ withRateGauge tag src = do
     begin = pure (0, Nothing)
     end = pure . snd
     withTimer = (Just <$> src) `S.async` (Nothing <$ timeout)
-    timeout = SP.repeatM $ liftIO $ threadDelay 1000000
+    timeout = SP.repeatM $ liftIO $ threadDelay (fromEnum (samplingRate * 1_000_000))
 
 withThroughputGauge
   :: forall m a b tag
