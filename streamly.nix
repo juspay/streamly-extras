@@ -8,8 +8,8 @@ mkDerivation {
   version = "0.6.1";
   src = fetchgit {
     url = "https://github.com/composewell/streamly.git";
-    rev = "8a4d965a93b375cb62afb66b74580c751f2ce3ff";
-    sha256 = "0qrsq2bnwchs8zjl4icazwhp76nlgfq8wbag2ip221y6h30vmrxi";
+    rev = "fbec11f24deda94a4e55dc4bec5d4c16d3db3d0c";
+    sha256 = "0a63dldjqgcpddjbqp43bcw1zsi87fbwlfqb1cg46b6nfirj2adv";
     fetchSubmodules = true;
   };
   isLibrary = true;

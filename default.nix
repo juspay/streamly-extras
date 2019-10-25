@@ -6,8 +6,8 @@ let
   nixpkgs = fetchFromGitHub {
     owner = "NixOS";
     repo = "nixpkgs";
-    rev = "db858b4d3032aec35be7e98a65eb9b91b63671ef";
-    sha256 = "0gqcbf5nyqff1a4ps6szcrv59ay97fr26jdwrs7qp8fijzcpdnkh";
+    rev = "e8a36cdf57193e56514aa6eeff936159372f0ace";
+    sha256 = "1jxdqphacpzkvwpkw67w1222jnmyplzall4n9sdwznyipxz6bqsv";
   };
   config = {
     packageOverrides = pkgs: rec {

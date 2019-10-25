@@ -10,6 +10,7 @@
 
 module Streamly.Extra where
 
+import GHC.Natural
 import Control.Arrow
 import Control.Concurrent hiding (yield)
 import Control.Monad
@@ -17,6 +18,7 @@ import Control.Monad.IO.Class
 import Data.IORef
 import Data.Map.Strict (Map)
 import qualified Control.Concurrent.STM.TChan as TChan
+import qualified Control.Concurrent.STM.TBQueue as BQ
 import qualified Control.Monad.STM as STM
 import qualified Data.Internal.SortedSet as ZSet
 import qualified Data.Map.Strict as Map
@@ -254,7 +256,7 @@ sampleOn src pulse =
     FL.scanl' fld combined
   where
   combined =
-    S.serially $ (Left <$> src) `S.async` (Right <$> pulse)
+    S.serially $ (Left <$> src) `S.parallel` (Right <$> pulse)
   fld = Fold step begin done
   -- First is the latest value of source,
   -- second is the value which to be yield'ed
@@ -274,7 +276,7 @@ applyWithLatestM f s1 s2 =
     FL.scanl' fld combined
   where
   combined =
-    S.serially $ (Left <$> s1) `S.async` (Right <$> s2)
+    S.serially $ (Left <$> s1) `S.parallel` (Right <$> s2)
   fld = Fold step begin done
   begin = pure (Nothing, Nothing)
   step (Just b, _) (Left a) = (Just b,) . Just <$> f a b
@@ -321,7 +323,7 @@ applyWithLatest src pulse =
     FL.scanl' fld combined
   where
   combined =
-    S.serially $ (Left <$> src) `S.async` (Right <$> pulse)
+    S.serially $ (Left <$> src) `S.parallel` (Right <$> pulse)
   fld = Fold step begin done
   -- First is the latest value of pulse,
   -- second is the value which to be yield'ed
@@ -398,7 +400,7 @@ zipAsyncly' aSrc fSrc =
     FL.scanl' fld combined
   where
   combined =
-    S.serially $ (Left <$> aSrc) `S.async` (Right <$> fSrc)
+    S.serially $ (Left <$> aSrc) `S.parallel` (Right <$> fSrc)
   fld = Fold step begin done
   -- First is the latest value of a -> b,
   -- Second is the latest value of a,
@@ -517,7 +519,7 @@ withRateGauge tag src =
     step (count, _) (Just a) = pure (count + 1, Just a)
     begin = pure (0, Nothing)
     end = pure . snd
-    withTimer = (Just <$> src) `S.async` (Nothing <$ timeout)
+    withTimer = (Just <$> src) `S.parallel` (Nothing <$ timeout)
     timeout = SP.repeatM $ liftIO $ threadDelay (fromEnum (samplingRate * 1_000_000))
 
 withThroughputGauge
@@ -541,5 +543,28 @@ withThroughputGauge tag recordMeasurement f =
     step (count, _) (Just a) = pure (count + 1, Just a)
     begin = pure (0, Nothing)
     end = pure . snd
-    withTimer = (Just <$> src) `S.async` (Nothing <$ timeout)
+    withTimer = (Just <$> src) `S.parallel` (Nothing <$ timeout)
     timeout = SP.repeatM $ liftIO $ threadDelay 1000000
+
+consumeWithBuffer
+  :: forall m a b
+  . Applicative m
+  => S.MonadAsync m
+  => Natural
+  -> (a -> m ())
+  -> S.SerialT m a
+  -> S.SerialT m ()
+consumeWithBuffer n drainBy src =
+  liftIO (BQ.newTBQueueIO n) >>= \chan -> producer chan `S.parallel` consumer chan
+  where
+    producer chan =
+      SP.mapM
+        (\a -> liftIO $ STM.atomically $ do
+          b <- BQ.isFullTBQueue chan
+          if b then pure () else BQ.writeTBQueue chan a)
+        src
+    consumer :: BQ.TBQueue a -> S.SerialT m ()
+    consumer chan =
+      SP.mapM
+        drainBy $
+        SP.repeatM (liftIO $ STM.atomically (BQ.readTBQueue chan))
