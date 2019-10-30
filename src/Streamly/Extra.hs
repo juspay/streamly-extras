@@ -24,14 +24,12 @@ import qualified Data.Internal.SortedSet as ZSet
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Streamly as S
-import qualified Streamly.Fold as FL
-import qualified Streamly.Internal as SI
+import qualified Streamly.Internal.Data.Fold as FL
 import qualified Streamly.Prelude as SP
-import Streamly.Internal
+import qualified Streamly.Internal.Data.Pipe as Pipe
 import Data.Function
 import Data.Functor
 import Control.Monad.Reader.Class
-import Streamly.Time.Units
 
 -- | Group the stream into a smaller set of keys and fold elements of a specific key
 demuxByM
@@ -41,8 +39,8 @@ demuxByM
   => (a -> m b)
   -> FL.Fold m a c
   -> FL.Fold m a [(b, c)]
-demuxByM f (Fold step' begin' done')
-  = Fold step begin done
+demuxByM f (FL.Fold step' begin' done')
+  = FL.Fold step begin done
   where
     begin = pure mempty
     step hm a = do
@@ -62,7 +60,7 @@ demuxAndAggregateByInterval
   -> t m a
   -> t m [(b, c)]
 demuxAndAggregateByInterval f delay agg =
-  FL.sessionsOf delay (demuxByM f agg)
+  SP.intervalsOf delay (demuxByM f agg)
 
 demuxAndAggregateInChunks
   :: Eq b
@@ -75,7 +73,7 @@ demuxAndAggregateInChunks
   -> t m a
   -> t m [(b, c)]
 demuxAndAggregateInChunks f chunkSize agg =
-  FL.chunksOf chunkSize (demuxByM f agg)
+  SP.chunksOf chunkSize (demuxByM f agg)
 
 demuxByAndAggregateInChunksOf
   :: Eq b
@@ -87,8 +85,8 @@ demuxByAndAggregateInChunksOf
   -> FL.Fold m a c
   -> S.SerialT m a
   -> S.SerialT m (b, c)
-demuxByAndAggregateInChunksOf f i (Fold step' begin' done') src
-  = SP.mapMaybe id $ FL.scanl' (Fold step begin done) src
+demuxByAndAggregateInChunksOf f i (FL.Fold step' begin' done') src
+  = SP.mapMaybe id $ SP.scan (FL.Fold step begin done) src
   where
   begin = pure (mempty, Nothing)
   step (hm, _) a = do
@@ -116,8 +114,8 @@ collectTillEndOrTimeout keyFn isEnd timeout src =
     completedSessionStream chan `S.parallel` incompletedSessionsStream chan
   where
     completedSessionStream c =
-      FL.scanl'
-        (Fold
+      SP.scan
+        (FL.Fold
           -- State is (IORef (HM b (ThreadId, [a])), IORef (Maybe [a]))
           -- First HM is a IORef because it should be modifiable by another thread
           -- Second is a IORef because every time an extract is called, it has to be cleared
@@ -218,7 +216,7 @@ firstOcc
   -> S.SerialT m a
 firstOcc =
   SP.mapMaybe id
-  .  FL.scanl' (Fold step begin end)
+  .  SP.scan (FL.Fold step begin end)
   where
   step (x, _) a =
     pure (Set.insert a x, if Set.member a x then Nothing else Just a)
@@ -253,11 +251,11 @@ sampleOn
   -> S.SerialT m b
 sampleOn src pulse =
   SP.mapMaybe id $
-    FL.scanl' fld combined
+    SP.scan fld combined
   where
   combined =
     S.serially $ (Left <$> src) `S.parallel` (Right <$> pulse)
-  fld = Fold step begin done
+  fld = FL.Fold step begin done
   -- First is the latest value of source,
   -- second is the value which to be yield'ed
   step _ (Left a) = pure (Just a, Nothing)
@@ -273,11 +271,11 @@ applyWithLatestM
   -> S.SerialT m c
 applyWithLatestM f s1 s2 =
   SP.mapMaybe id $
-    FL.scanl' fld combined
+    SP.scan fld combined
   where
   combined =
     S.serially $ (Left <$> s1) `S.parallel` (Right <$> s2)
-  fld = Fold step begin done
+  fld = FL.Fold step begin done
   begin = pure (Nothing, Nothing)
   step (Just b, _) (Left a) = (Just b,) . Just <$> f a b
   step (Nothing, _) (Left a) = pure (Nothing, Nothing)
@@ -320,11 +318,11 @@ applyWithLatest
   -> S.SerialT m b
 applyWithLatest src pulse =
   SP.mapMaybe id $
-    FL.scanl' fld combined
+    SP.scan fld combined
   where
   combined =
     S.serially $ (Left <$> src) `S.parallel` (Right <$> pulse)
-  fld = Fold step begin done
+  fld = FL.Fold step begin done
   -- First is the latest value of pulse,
   -- second is the value which to be yield'ed
   begin = pure (Nothing, Nothing)
@@ -397,11 +395,11 @@ zipAsyncly'
   -> S.SerialT m b
 zipAsyncly' aSrc fSrc =
   SP.mapMaybe id $
-    FL.scanl' fld combined
+    SP.scan fld combined
   where
   combined =
     S.serially $ (Left <$> aSrc) `S.parallel` (Right <$> fSrc)
-  fld = Fold step begin done
+  fld = FL.Fold step begin done
   -- First is the latest value of a -> b,
   -- Second is the latest value of a,
   -- Third is the value which to be yield'ed
@@ -437,8 +435,8 @@ firstOccWithin
 firstOccWithin tickInterval timeThreshold src
   =
   SP.mapMaybe id $
-    FL.scanl'
-      (Fold step begin end)
+    SP.scan
+      (FL.Fold step begin end)
       srcWithTicker
   where
   step (x, _) (a, (up, down)) =
@@ -462,7 +460,7 @@ groupConsecutiveBy
   => Monad m
   => (a -> b)
   -> FL.Fold m (Maybe a) (Maybe [a])
-groupConsecutiveBy f = SI.Fold step begin end
+groupConsecutiveBy f = FL.Fold step begin end
   where
   -- State is a tuple of 3 elements
   -- First is the optional Last Id we have seen.
@@ -485,7 +483,7 @@ counts
   :: Applicative m
   => Ord a
   => FL.Fold m a (Map a Int)
-counts = SI.Fold step begin end
+counts = FL.Fold step begin end
   where
   step x a =
     pure $ Map.alter (Just . maybe 1 (+1)) a x
@@ -513,7 +511,7 @@ withRateGauge tag src =
   measureAndRecord :: Direction -> LoggerConfig tag -> S.SerialT m a
   measureAndRecord direction (LoggerConfig { logger, samplingRate }) =
     SP.mapMaybe id $
-      FL.scanl' (SI.Fold step begin end) withTimer
+      SP.scan (FL.Fold step begin end) withTimer
     where
     step (count, _) Nothing = liftIO (logger tag direction count) $> (0, Nothing)
     step (count, _) (Just a) = pure (count + 1, Just a)
@@ -537,7 +535,7 @@ withThroughputGauge tag recordMeasurement f =
   measureAndRecord :: Direction -> S.SerialT m c -> S.SerialT m c
   measureAndRecord direction src =
     SP.mapMaybe id $
-      FL.scanl' (SI.Fold step begin end) withTimer
+      SP.scan (FL.Fold step begin end) withTimer
     where
     step (count, _) Nothing = liftIO (recordMeasurement tag direction count) $> (0, Nothing)
     step (count, _) (Just a) = pure (count + 1, Just a)
