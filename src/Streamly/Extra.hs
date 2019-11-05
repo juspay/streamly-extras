@@ -30,6 +30,7 @@ import qualified Streamly.Prelude as SP
 import qualified Streamly.Internal.Data.Pipe as Pipe
 import Data.Function
 import Data.Functor
+import Data.Either
 import Control.Monad.Reader.Class
 
 -- | Group the stream into a smaller set of keys and fold elements of a specific key
@@ -172,25 +173,31 @@ runAllWith combine fs src =
         f (SP.repeatM ( STM.atomically $ TChan.readTChan chan'))) fs
 
 duplicate
-  :: MonadIO m
-  => S.SerialT IO a
-  -> m (S.SerialT IO a, S.SerialT IO a)
-duplicate src =
-  liftIO $ do
+  :: S.MonadAsync m
+  => S.SerialT m a
+  -> m (S.SerialT m a, S.SerialT m a)
+duplicate src = do
+  (writeChan, readChan1, readChan2) <- liftIO $ do
     chan <- TChan.newBroadcastTChanIO
     chan' <- STM.atomically $ TChan.dupTChan chan
     chan'' <- STM.atomically $ TChan.dupTChan chan
-    forkIO $
-      SP.mapM_ (STM.atomically . TChan.writeTChan chan) src
-    pure (S.maxBuffer (-1) (SP.repeatM (STM.atomically $ TChan.readTChan chan')), S.maxBuffer (-1) (SP.repeatM (STM.atomically $ TChan.readTChan chan'')))
+    pure (chan, chan', chan'')
+  let
+    writes =
+      SP.mapM (liftIO . STM.atomically . TChan.writeTChan writeChan) src
+    reads1 =
+      SP.repeatM (liftIO $ STM.atomically $ TChan.readTChan readChan1)
+    reads2 =
+      SP.repeatM (liftIO $ STM.atomically $ TChan.readTChan readChan2)
+  pure $ (fmap (fromRight undefined) $ SP.filter isRight $ (Left <$> writes) `S.async` (Right <$> reads1), reads2)
 
-threeWaySplit
-  :: MonadIO m
-  => S.SerialT IO a
-  -> m (S.SerialT IO a, S.SerialT IO a, S.SerialT IO a)
-threeWaySplit =
-  duplicate
-  >=> (\(c1, c2) -> (\t -> (c1,fst t, snd t)) <$> duplicate c2)
+-- threeWaySplit
+--   :: MonadIO m
+--   => S.SerialT IO a
+--   -> m (S.SerialT IO a, S.SerialT IO a, S.SerialT IO a)
+-- threeWaySplit =
+--   duplicate
+--   >=> (\(c1, c2) -> (\t -> (c1,fst t, snd t)) <$> duplicate c2)
 
 tap
   :: S.MonadAsync m
