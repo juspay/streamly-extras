@@ -278,9 +278,9 @@ applyWithLatestM f s1 s2 =
     S.serially $ (Left <$> s1) `S.parallel` (Right <$> s2)
   fld = FL.Fold step begin done
   begin = pure (Nothing, Nothing)
-  step (Just b, _) !(Left a) = (Just b,) . Just <$> f a b
-  step (Nothing, _) !(Left a) = pure (Nothing, Nothing)
-  step _ !(Right b) = pure (Just b, Nothing)
+  step (Just b, _) (Left !a) = (Just b,) . Just <$> f a b
+  step (Nothing, _) (Left !a) = pure (Nothing, Nothing)
+  step _ (Right !b) = pure (Just b, Nothing)
   done (_, !out) = pure out
 -- | Stream which produces values as fast as the faster stream(the first argument)
 --   using the latest value from the slower stream(the second argument)
