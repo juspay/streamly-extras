@@ -82,11 +82,12 @@ demuxByAndAggregateInChunksOf
   => Ord b
   => Show b
   => S.MonadAsync m
+  => S.IsStream t
   => (a -> m b)
   -> Int
   -> FL.Fold m a c
-  -> S.SerialT m a
-  -> S.SerialT m (b, c)
+  -> t m a
+  -> t m (b, c)
 demuxByAndAggregateInChunksOf f i (FL.Fold step' begin' done') src
   = SP.mapMaybe id $ SP.scan (FL.Fold step begin done) src
   where
@@ -156,26 +157,30 @@ collectTillEndOrTimeout keyFn isEnd timeout src =
     incompletedSessionsStream c = SP.repeatM (liftIO $ STM.atomically $ TChan.readTChan c)
 
 runAllWith
-  :: (forall c. S.SerialT IO c -> S.SerialT IO c -> S.SerialT IO c)
-  -> [ S.SerialT IO a -> S.SerialT IO () ]
-  -> S.SerialT IO a
-  -> S.SerialT IO ()
-runAllWith combine fs src =
-  do
-    chan <- liftIO $ do
-      chan <- TChan.newBroadcastTChanIO
-      forkIO $
-        SP.mapM_ (STM.atomically . TChan.writeTChan chan) src
-      pure chan
-    SP.foldMapWith combine
-      (\f -> do
-        chan' <- liftIO $ STM.atomically $ TChan.dupTChan chan
-        f (SP.repeatM ( STM.atomically $ TChan.readTChan chan'))) fs
+  :: S.MonadAsync m
+  => S.IsStream t
+  => MonadIO (t m)
+  => (forall c. t m c -> t m c -> t m c)
+  -> [ t m a -> t m () ]
+  -> t m a
+  -> t m ()
+runAllWith combine fs src = do
+  writeChan <- liftIO TChan.newBroadcastTChanIO
+  SP.mapM (liftIO . STM.atomically . TChan.writeTChan writeChan) src
+    `S.parallel`
+    SP.forEachWith combine fs (\f -> do
+      chan' <- liftIO $ STM.atomically $ TChan.dupTChan writeChan
+      f $ SP.repeatM $ liftIO $
+        STM.atomically $
+          TChan.readTChan chan')
 
+-- Works only on infinite streams.
 duplicate
   :: S.MonadAsync m
-  => S.SerialT m a
-  -> m (S.SerialT m a, S.SerialT m a)
+  => S.IsStream t
+  => Monad (t m)
+  => t m a
+  -> m (t m a, t m a)
 duplicate src = do
   (writeChan, readChan1, readChan2) <- liftIO $ do
     chan <- TChan.newBroadcastTChanIO
@@ -189,15 +194,7 @@ duplicate src = do
       SP.repeatM (liftIO $ STM.atomically $ TChan.readTChan readChan1)
     reads2 =
       SP.repeatM (liftIO $ STM.atomically $ TChan.readTChan readChan2)
-  pure $ (fmap (fromRight undefined) $ SP.filter isRight $ (Left <$> writes) `S.async` (Right <$> reads1), reads2)
-
--- threeWaySplit
---   :: MonadIO m
---   => S.SerialT IO a
---   -> m (S.SerialT IO a, S.SerialT IO a, S.SerialT IO a)
--- threeWaySplit =
---   duplicate
---   >=> (\(c1, c2) -> (\t -> (c1,fst t, snd t)) <$> duplicate c2)
+  pure (fmap (fromRight undefined) $ SP.filter isRight $ (Left <$> writes) `S.async` (Right <$> reads1), reads2)
 
 tap
   :: S.MonadAsync m
@@ -220,8 +217,9 @@ infixl 5 |>>
 firstOcc
   :: Ord a
   => Monad m
-  => S.SerialT m a
-  -> S.SerialT m a
+  => S.IsStream t
+  => t m a
+  -> t m a
 firstOcc =
   SP.mapMaybe id
   .  SP.scan (FL.Fold step begin end)
@@ -254,15 +252,17 @@ firstOcc =
 --   (62,60)
 sampleOn
   :: S.MonadAsync m
-  => S.SerialT m a
-  -> S.SerialT m (a -> b)
-  -> S.SerialT m b
+  => S.IsStream t
+  => Monad (t m)
+  => t m a
+  -> t m (a -> b)
+  -> t m b
 sampleOn src pulse =
   SP.mapMaybe id $
     SP.scan fld combined
   where
   combined =
-    S.serially $ (Left <$> src) `S.parallel` (Right <$> pulse)
+    (Left <$> src) `S.parallel` (Right <$> pulse)
   fld = FL.Fold step begin done
   -- First is the latest value of source,
   -- second is the value which to be yield'ed
@@ -273,16 +273,18 @@ sampleOn src pulse =
 
 applyWithLatestM
   :: S.MonadAsync m
+  => S.IsStream t
+  => Monad (t m)
   => (a -> b -> m c)
-  -> S.SerialT m a
-  -> S.SerialT m b
-  -> S.SerialT m c
+  -> t m a
+  -> t m b
+  -> t m c
 applyWithLatestM f s1 s2 =
   SP.mapMaybe id $
     SP.scan fld combined
   where
   combined =
-    S.serially $ (Left <$> s1) `S.parallel` (Right <$> s2)
+    (Left <$> s1) `S.parallel` (Right <$> s2)
   fld = FL.Fold step begin done
   begin = pure (Nothing, Nothing)
   step (Just b, _) (Left !a) = (Just b,) . Just <$> f a b
@@ -321,24 +323,13 @@ applyWithLatestM f s1 s2 =
 --   (32,30)
 applyWithLatest
   :: S.MonadAsync m
-  => S.SerialT m a
-  -> S.SerialT m (a -> b)
-  -> S.SerialT m b
-applyWithLatest src pulse =
-  SP.mapMaybe id $
-    SP.scan fld combined
-  where
-  combined =
-    S.serially $ (Left <$> src) `S.parallel` (Right <$> pulse)
-  fld = FL.Fold step begin done
-  -- First is the latest value of pulse,
-  -- second is the value which to be yield'ed
-  begin = pure (Nothing, Nothing)
-  step (Just f, _) (Left a) = pure (Just f, Just (f a))
-  step (Nothing, _) (Left _) = pure (Nothing, Nothing)
-  step _ (Right f') = pure (Just f', Nothing)
-  done (_, out) = pure out
-
+  => S.IsStream t
+  => Monad (t m)
+  => t m a
+  -> t m (a -> b)
+  -> t m b
+applyWithLatest =
+  applyWithLatestM (\a f -> pure $ f a)
 
 -- | Stream which races a function stream and a argument stream
 --   and uses the latest value of the other stream whenever any of the stream yields a value
@@ -398,15 +389,17 @@ applyWithLatest src pulse =
 --   (30,32)
 zipAsyncly'
   :: S.MonadAsync m
-  => S.SerialT m a
-  -> S.SerialT m (a -> b)
-  -> S.SerialT m b
+  => S.IsStream t
+  => Monad (t m)
+  => t m a
+  -> t m (a -> b)
+  -> t m b
 zipAsyncly' aSrc fSrc =
   SP.mapMaybe id $
     SP.scan fld combined
   where
   combined =
-    S.serially $ (Left <$> aSrc) `S.parallel` (Right <$> fSrc)
+    (Left <$> aSrc) `S.parallel` (Right <$> fSrc)
   fld = FL.Fold step begin done
   -- First is the latest value of a -> b,
   -- Second is the latest value of a,
@@ -436,10 +429,12 @@ zipAsyncly' aSrc fSrc =
 firstOccWithin
   :: Ord a
   => S.MonadAsync m
+  => S.IsStream t
+  => Monad (t m)
   => Int
   -> Int
-  -> S.SerialT m a
-  -> S.SerialT m a
+  -> t m a
+  -> t m a
 firstOccWithin tickInterval timeThreshold src
   =
   SP.mapMaybe id $
@@ -506,17 +501,19 @@ data LoggerConfig tag
   , samplingRate :: Double {-Rate of measurement in seconds-}}
 
 withRateGauge
-  :: forall m a b tag
+  :: forall t m a b tag
   . Applicative m
   => S.MonadAsync m
-  => MonadReader (LoggerConfig tag) m
+  => S.IsStream t
+  => Monad (t m)
+  => MonadReader (LoggerConfig tag) (t m)
   => tag
-  -> S.SerialT m a
-  -> S.SerialT m a
+  -> t m a
+  -> t m a
 withRateGauge tag src =
   ask >>= measureAndRecord IN
   where
-  measureAndRecord :: Direction -> LoggerConfig tag -> S.SerialT m a
+  measureAndRecord :: Direction -> LoggerConfig tag -> t m a
   measureAndRecord direction (LoggerConfig { logger, samplingRate }) =
     SP.mapMaybe id $
       SP.scan (FL.Fold step begin end) withTimer
@@ -529,18 +526,20 @@ withRateGauge tag src =
     timeout = SP.repeatM $ liftIO $ threadDelay (fromEnum (samplingRate * 1_000_000))
 
 withThroughputGauge
-  :: forall m a b tag
+  :: forall t m a b tag
   . Applicative m
   => S.MonadAsync m
+  => S.IsStream t
+  => Monad (t m)
   => tag
   -> Logger tag
-  -> (S.SerialT m a -> S.SerialT m b)
-  -> S.SerialT m a
-  -> S.SerialT m b
+  -> (t m a -> t m b)
+  -> t m a
+  -> t m b
 withThroughputGauge tag recordMeasurement f =
   measureAndRecord OUT . f . measureAndRecord IN
   where
-  measureAndRecord :: Direction -> S.SerialT m c -> S.SerialT m c
+  measureAndRecord :: Direction -> t m c -> t m c
   measureAndRecord direction src =
     SP.mapMaybe id $
       SP.scan (FL.Fold step begin end) withTimer
@@ -553,13 +552,15 @@ withThroughputGauge tag recordMeasurement f =
     timeout = SP.repeatM $ liftIO $ threadDelay 1000000
 
 consumeWithBuffer
-  :: forall m a b
+  :: forall t m a b
   . Applicative m
+  => S.IsStream t
+  => MonadIO (t m)
   => S.MonadAsync m
   => Natural
   -> (a -> m ())
-  -> S.SerialT m a
-  -> S.SerialT m ()
+  -> t m a
+  -> t m ()
 consumeWithBuffer n drainBy src =
   liftIO (BQ.newTBQueueIO n) >>= \chan -> producer chan `S.parallel` consumer chan
   where
@@ -569,8 +570,7 @@ consumeWithBuffer n drainBy src =
           b <- BQ.isFullTBQueue chan
           if b then pure () else BQ.writeTBQueue chan a)
         src
-    consumer :: BQ.TBQueue a -> S.SerialT m ()
+    consumer :: BQ.TBQueue a -> t m ()
     consumer chan =
-      SP.mapM
-        drainBy $
+      SP.mapM drainBy $
         SP.repeatM (liftIO $ STM.atomically (BQ.readTBQueue chan))
