@@ -500,17 +500,18 @@ data LoggerConfig tag
   { logger :: Logger tag
   , samplingRate :: Double {-Rate of measurement in seconds-}}
 
-withRateGauge
+withRateGaugeWithElements
   :: forall t m a b tag
   . Applicative m
   => S.MonadAsync m
   => S.IsStream t
   => Monad (t m)
   => MonadReader (LoggerConfig tag) (t m)
-  => tag
+  => Ord tag
+  => (a -> tag)
   -> t m a
   -> t m a
-withRateGauge tag src =
+withRateGaugeWithElements tagGenerator src =
   ask >>= measureAndRecord IN
   where
   measureAndRecord :: Direction -> LoggerConfig tag -> t m a
@@ -518,12 +519,28 @@ withRateGauge tag src =
     SP.mapMaybe id $
       SP.scan (FL.Fold step begin end) withTimer
     where
-    step (count, _) Nothing = liftIO (logger tag direction count) $> (0, Nothing)
-    step (count, _) (Just a) = pure (count + 1, Just a)
-    begin = pure (0, Nothing)
+    step (counts, _) Nothing =
+      (Map.empty, Nothing) <$
+        Map.traverseWithKey (\tag count -> liftIO $ logger tag direction count) counts
+    step (counts, _) (Just a) =
+      pure (Map.alter (Just . maybe 1 (+1)) (tagGenerator a) counts, Just a)
+    begin = pure (Map.empty, Nothing)
     end = pure . snd
     withTimer = (Just <$> src) `S.parallel` (Nothing <$ timeout)
     timeout = SP.repeatM $ liftIO $ threadDelay (fromEnum (samplingRate * 1_000_000))
+
+withRateGauge
+  :: forall t m a b tag
+  . Applicative m
+  => S.MonadAsync m
+  => S.IsStream t
+  => Monad (t m)
+  => MonadReader (LoggerConfig tag) (t m)
+  => Ord tag
+  => tag
+  -> t m a
+  -> t m a
+withRateGauge tag = withRateGaugeWithElements (const tag)
 
 withThroughputGauge
   :: forall t m a b tag
