@@ -168,7 +168,7 @@ runAllWith combine fs src = do
   writeChan <- liftIO TChan.newBroadcastTChanIO
   SP.mapM (liftIO . STM.atomically . TChan.writeTChan writeChan) src
     `S.parallel`
-    SP.forEachWith combine fs (\f -> do
+    S.forEachWith combine fs (\f -> do
       chan' <- liftIO $ STM.atomically $ TChan.dupTChan writeChan
       f $ SP.repeatM $ liftIO $
         STM.atomically $
