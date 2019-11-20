@@ -5,12 +5,12 @@
 }:
 mkDerivation {
   pname = "streamly";
-  version = "0.6.1";
+  version = "0.7.0";
   src = fetchFromGitHub {
     owner = "composewell";
     repo = "streamly";
-    rev = "be920a2bfa906d85ad7c41b6e6b9a7ce731ac774";
-    sha256 = "1di6d2b9rxcgf6jrg57r0hhkasbr7b181v96a177spjw23j5sxv9";
+    rev = "v0.7.0";
+    sha256 = "10qm72l7r4drqsajqrg3i1pqdi1bscz8p3k23vpi2ahrscd9kfdz";
   };
   isLibrary = true;
   isExecutable = true;
