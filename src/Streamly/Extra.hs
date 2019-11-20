@@ -520,7 +520,7 @@ withRateGaugeWithElements tagGenerator src =
       SP.scan (FL.Fold step begin end) withTimer
     where
     step (counts, _) Nothing =
-      (Map.empty, Nothing) <$
+      (Map.map (const 0) counts, Nothing) <$
         Map.traverseWithKey (\tag count -> liftIO $ logger tag direction count) counts
     step (counts, _) (Just a) =
       pure (Map.alter (Just . maybe 1 (+1)) (tagGenerator a) counts, Just a)
