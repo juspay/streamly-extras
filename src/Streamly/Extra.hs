@@ -11,27 +11,32 @@
 
 module Streamly.Extra where
 
-import GHC.Natural
-import Control.Arrow
-import Control.Concurrent hiding (yield)
-import Control.Monad
-import Control.Monad.IO.Class
-import Data.IORef
-import Data.Map.Strict (Map)
+import           GHC.Natural
+import           Control.Arrow
+import           Control.Concurrent hiding (yield)
 import qualified Control.Concurrent.STM.TChan as TChan
 import qualified Control.Concurrent.STM.TBQueue as BQ
+import           Control.Monad
+import           Control.Monad.Catch (MonadMask)
+import           Control.Monad.Except (catchError, MonadError)
+import           Control.Monad.IO.Class
+import           Control.Monad.Reader.Class
 import qualified Control.Monad.STM as STM
+import qualified Data.ByteString as BS
+import           Data.Function
+import           Data.Functor
+import           Data.Either
 import qualified Data.Internal.SortedSet as ZSet
+import           Data.IORef
 import qualified Data.Map.Strict as Map
+import           Data.Maybe (fromMaybe, isJust)
 import qualified Data.Set as Set
+import           Network.Socket ( Socket(..), close)
+import           Network.Socket.ByteString (recv)
 import qualified Streamly as S
 import qualified Streamly.Internal.Data.Fold as FL
 import qualified Streamly.Prelude as SP
 import qualified Streamly.Internal.Data.Pipe as Pipe
-import Data.Function
-import Data.Functor
-import Data.Either
-import Control.Monad.Reader.Class
 
 -- | Group the stream into a smaller set of keys and fold elements of a specific key
 demuxByM
@@ -155,6 +160,25 @@ collectTillEndOrTimeout keyFn isEnd timeout src =
           (\(_, outRef) -> liftIO $ atomicModifyIORef' outRef (\mAs -> (Nothing, mAs))))
         src
     incompletedSessionsStream c = SP.repeatM (liftIO $ STM.atomically $ TChan.readTChan c)
+
+-- Reads lines from a socket and produces a parsed stream
+lineStream
+  :: (S.MonadAsync m, MonadMask m, MonadError e m)
+  => Socket
+  -> (BS.ByteString -> (Maybe [b], BS.ByteString))
+  -> S.SerialT m b
+lineStream sock parser =
+  SP.concatMap SP.fromList
+  . fmap (fromMaybe mempty)
+  . SP.takeWhile isJust $
+    fst <$>
+      S.maxBuffer (-1)
+        (SP.iterateM (\(_, buf) -> do
+          b <- catchError (liftIO . recv sock $ 4096) (\_ -> pure mempty)
+          if BS.null b
+            then (liftIO . close $ sock) $> (Nothing, b)
+          else buf <> b & pure . parser)
+          (pure (Just mempty, mempty)))
 
 runAllWith
   :: S.MonadAsync m
@@ -485,7 +509,7 @@ groupConsecutiveBy f = FL.Fold step begin end
 counts
   :: Applicative m
   => Ord a
-  => FL.Fold m a (Map a Int)
+  => FL.Fold m a (Map.Map a Int)
 counts = FL.Fold step begin end
   where
   step x a =
