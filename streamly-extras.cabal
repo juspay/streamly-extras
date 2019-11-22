@@ -67,7 +67,9 @@ library
                , stm
                , mtl
                , monad-control
-
+               , network
+               , bytestring
+               , exceptions
   -- Directories containing source files.
   hs-source-dirs:      src
 
