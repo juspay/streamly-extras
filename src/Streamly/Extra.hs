@@ -599,6 +599,7 @@ runTillEndOfEitherWith
   :: forall t m a
   . S.IsStream t
   => S.MonadAsync m
+  => Functor (t m)
   => (forall c. t m c -> t m c -> t m c)
   -> t m a
   -> t m a
