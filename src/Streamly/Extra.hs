@@ -286,7 +286,8 @@ sampleOn src pulse =
     SP.scan fld combined
   where
   combined =
-    (Left <$> src) `S.parallel` (Right <$> pulse)
+    runTillEndOfEitherWith
+      S.parallel (Left <$> src) (Right <$> pulse)
   fld = FL.Fold step begin done
   -- First is the latest value of source,
   -- second is the value which to be yield'ed
@@ -308,7 +309,8 @@ applyWithLatestM f s1 s2 =
     SP.scan fld combined
   where
   combined =
-    (Left <$> s1) `S.parallel` (Right <$> s2)
+    runTillEndOfEitherWith
+      S.parallel (Left <$> s1) (Right <$> s2)
   fld = FL.Fold step begin done
   begin = pure (Nothing, Nothing)
   step (Just b, _) (Left !a) = (Just b,) . Just <$> f a b
@@ -550,7 +552,8 @@ withRateGaugeWithElements tagGenerator src =
       pure (Map.alter (Just . maybe 1 (+1)) (tagGenerator a) counts, Just a)
     begin = pure (Map.empty, Nothing)
     end = pure . snd
-    withTimer = (Just <$> src) `S.parallel` (Nothing <$ timeout)
+    withTimer =
+      runTillEndOfEitherWith S.parallel (Just <$> src) (Nothing <$ timeout)
     timeout = SP.repeatM $ liftIO $ threadDelay (fromEnum (samplingRate * 1_000_000))
 
 withRateGauge
@@ -592,26 +595,17 @@ withThroughputGauge tag recordMeasurement f =
     withTimer = (Just <$> src) `S.parallel` (Nothing <$ timeout)
     timeout = SP.repeatM $ liftIO $ threadDelay 1000000
 
-consumeWithBuffer
-  :: forall t m a b
-  . Applicative m
-  => S.IsStream t
-  => MonadIO (t m)
+runTillEndOfEitherWith
+  :: forall t m a
+  . S.IsStream t
   => S.MonadAsync m
-  => Natural
-  -> (a -> m ())
+  => (forall c. t m c -> t m c -> t m c)
   -> t m a
-  -> t m ()
-consumeWithBuffer n drainBy src =
-  liftIO (BQ.newTBQueueIO n) >>= \chan -> producer chan `S.parallel` consumer chan
-  where
-    producer chan =
-      SP.mapM
-        (\a -> liftIO $ STM.atomically $ do
-          b <- BQ.isFullTBQueue chan
-          if b then pure () else BQ.writeTBQueue chan a)
-        src
-    consumer :: BQ.TBQueue a -> t m ()
-    consumer chan =
-      SP.mapM drainBy $
-        SP.repeatM (liftIO $ STM.atomically (BQ.readTBQueue chan))
+  -> t m a
+  -> t m a
+runTillEndOfEitherWith combine src1 src2 =
+  SP.mapMaybe id $
+  SP.takeWhile isJust $
+    (Just <$> src1) <> SP.yield Nothing
+      `combine`
+    (Just <$> src2) <> SP.yield Nothing
