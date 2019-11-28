@@ -11,12 +11,9 @@
 
 module Streamly.Extra where
 
-import           GHC.Natural
 import           Control.Arrow
 import           Control.Concurrent hiding (yield)
 import qualified Control.Concurrent.STM.TChan as TChan
-import qualified Control.Concurrent.STM.TBQueue as BQ
-import           Control.Monad
 import           Control.Monad.Catch (MonadMask)
 import           Control.Monad.Except (catchError, MonadError)
 import           Control.Monad.IO.Class
@@ -36,7 +33,6 @@ import           Network.Socket.ByteString (recv)
 import qualified Streamly as S
 import qualified Streamly.Internal.Data.Fold as FL
 import qualified Streamly.Prelude as SP
-import qualified Streamly.Internal.Data.Pipe as Pipe
 
 -- | Group the stream into a smaller set of keys and fold elements of a specific key
 demuxByM
@@ -189,11 +185,11 @@ runAllWith
   -> t m a
   -> t m ()
 runAllWith combine fs src = do
-  writeChan <- liftIO TChan.newBroadcastTChanIO
-  SP.mapM (liftIO . STM.atomically . TChan.writeTChan writeChan) src
+  writeChan' <- liftIO TChan.newBroadcastTChanIO
+  SP.mapM (liftIO . STM.atomically . TChan.writeTChan writeChan') src
     `S.parallel`
     S.forEachWith combine fs (\f -> do
-      chan' <- liftIO $ STM.atomically $ TChan.dupTChan writeChan
+      chan' <- liftIO $ STM.atomically $ TChan.dupTChan writeChan'
       f $ SP.repeatM $ liftIO $
         STM.atomically $
           TChan.readTChan chan')
@@ -206,14 +202,14 @@ duplicate
   => t m a
   -> m (t m a, t m a)
 duplicate src = do
-  (writeChan, readChan1, readChan2) <- liftIO $ do
+  (writeChan', readChan1, readChan2) <- liftIO $ do
     chan <- TChan.newBroadcastTChanIO
     chan' <- STM.atomically $ TChan.dupTChan chan
     chan'' <- STM.atomically $ TChan.dupTChan chan
     pure (chan, chan', chan'')
   let
     writes =
-      SP.mapM (liftIO . STM.atomically . TChan.writeTChan writeChan) src
+      SP.mapM (liftIO . STM.atomically . TChan.writeTChan writeChan') src
     reads1 =
       SP.repeatM (liftIO $ STM.atomically $ TChan.readTChan readChan1)
     reads2 =
@@ -314,7 +310,7 @@ applyWithLatestM f s1 s2 =
   fld = FL.Fold step begin done
   begin = pure (Nothing, Nothing)
   step (Just b, _) (Left !a) = (Just b,) . Just <$> f a b
-  step (Nothing, _) (Left !a) = pure (Nothing, Nothing)
+  step (Nothing, _) (Left _) = pure (Nothing, Nothing)
   step _ (Right !b) = pure (Just b, Nothing)
   done (_, !out) = pure out
 -- | Stream which produces values as fast as the faster stream(the first argument)
@@ -527,7 +523,7 @@ data LoggerConfig tag
   , samplingRate :: Double {-Rate of measurement in seconds-}}
 
 withRateGaugeWithElements
-  :: forall t m a b tag
+  :: forall t m a tag
   . Applicative m
   => S.MonadAsync m
   => S.IsStream t
@@ -557,7 +553,7 @@ withRateGaugeWithElements tagGenerator src =
     timeout = SP.repeatM $ liftIO $ threadDelay (fromEnum (samplingRate * 1_000_000))
 
 withRateGauge
-  :: forall t m a b tag
+  :: forall t m a tag
   . Applicative m
   => S.MonadAsync m
   => S.IsStream t
@@ -598,7 +594,7 @@ withThroughputGauge tag recordMeasurement f =
 runTillEndOfEitherWith
   :: forall t m a
   . S.IsStream t
-  => S.MonadAsync m
+  => Monad m
   => Functor (t m)
   => (forall c. t m c -> t m c -> t m c)
   -> t m a
@@ -607,6 +603,6 @@ runTillEndOfEitherWith
 runTillEndOfEitherWith combine src1 src2 =
   SP.mapMaybe id $
   SP.takeWhile isJust $
-    (Just <$> src1) <> SP.yield Nothing
+    ((Just <$> src1) `S.serial` SP.yield Nothing)
       `combine`
-    (Just <$> src2) <> SP.yield Nothing
+    ((Just <$> src2) `S.serial` SP.yield Nothing)

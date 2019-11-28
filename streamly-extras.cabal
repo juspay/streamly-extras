@@ -52,6 +52,17 @@ extra-source-files:  CHANGELOG.md
 
 library
   -- Modules exported by the library.
+  ghc-options:
+    -O2
+    -Wall
+    -fwarn-incomplete-patterns
+    -fwarn-incomplete-uni-patterns
+    -threaded
+    -with-rtsopts=-N
+    -fspec-constr-recursive=10
+    -fno-ignore-asserts
+    -ddump-minimal-imports
+
   exposed-modules: Streamly.Extra
 
   -- Modules included in this library but not exported.
