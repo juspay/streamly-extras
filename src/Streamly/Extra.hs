@@ -27,6 +27,7 @@ import qualified Data.Internal.SortedSet as ZSet
 import           Data.IORef
 import qualified Data.Map.Strict as Map
 import           Data.Maybe (fromMaybe, isJust)
+import qualified Data.Streaming.Zlib as Zlib
 import qualified Data.Set as Set
 import           Network.Socket ( Socket(..), close)
 import           Network.Socket.ByteString (recv)
@@ -606,3 +607,37 @@ runTillEndOfEitherWith combine src1 src2 =
     ((Just <$> src1) `S.serial` SP.yield Nothing)
       `combine`
     ((Just <$> src2) `S.serial` SP.yield Nothing)
+
+compress
+ :: forall t m
+ . S.IsStream t
+ => S.MonadAsync m
+ => Monad (t m)
+ => Int           -- Compression Level ranging between 0,9 | 0 : lowest compression high Speed, 9 : highest compression but slow
+ -> t m BS.ByteString
+ -> t m BS.ByteString
+compress compressionLevel stream = do
+  deflate <- SP.yieldM $ liftIO $ Zlib.initDeflate compressionLevel (Zlib.WindowBits 31) --for GZip compression WindowBits will be 31
+  SP.mapM
+   (\bs -> liftIO $ do
+           Zlib.feedDeflate deflate bs
+           popperRes <- Zlib.flushDeflate deflate
+           pure $ case popperRes of
+                   Zlib.PRNext message -> message
+                   _ -> mempty) stream
+
+decompress
+ :: forall t m
+ . S.IsStream t
+ => S.MonadAsync m
+ => Monad (t m)
+ => t m BS.ByteString
+ -> t m BS.ByteString
+decompress stream = do
+  inflate <- SP.yieldM $ liftIO $ Zlib.initInflate (Zlib.WindowBits 31)
+  SP.mapM
+   (\bs ->
+     liftIO $ do
+     popper <- Zlib.feedInflate inflate bs
+     void popper
+     Zlib.flushInflate inflate) stream

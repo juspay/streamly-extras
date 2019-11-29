@@ -81,6 +81,7 @@ library
                , network
                , bytestring
                , exceptions
+               , streaming-commons
   -- Directories containing source files.
   hs-source-dirs:      src
 
@@ -92,7 +93,7 @@ flag dev
 executable examples
   hs-source-dirs: test, src
   main-is: Main.hs
-  build-depends: 
+  build-depends:
       streamly-extras
     , base
     , containers
@@ -100,6 +101,7 @@ executable examples
     , streamly
     , mtl
     , monad-control
+    , streaming-commons
   if flag(dev)
     buildable: True
   else

@@ -1,5 +1,5 @@
 { mkDerivation, base, containers, monad-control, mtl, stdenv, stm
-, streamly, network, bytestring, exceptions
+, streamly, network, bytestring, exceptions, streaming-commons
 }:
 mkDerivation {
   pname = "streamly-extras";
@@ -8,7 +8,7 @@ mkDerivation {
   isLibrary = true;
   isExecutable = true;
   libraryHaskellDepends = [
-    base containers monad-control mtl stm streamly network bytestring exceptions
+    base containers monad-control mtl stm streamly network bytestring exceptions streaming-commons
   ];
   homepage = "https://github.com/juspay/streamly-extras";
   description = "To provide extra utility functions on top of Streamly";
