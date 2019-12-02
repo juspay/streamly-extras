@@ -35,6 +35,13 @@ import qualified Streamly as S
 import qualified Streamly.Internal.Data.Fold as FL
 import qualified Streamly.Prelude as SP
 
+catMaybes
+  :: S.IsStream t
+  => Monad m
+  => t m (Maybe a)
+  -> t m a
+catMaybes = SP.mapMaybe id
+
 -- | Group the stream into a smaller set of keys and fold elements of a specific key
 demuxByM
   :: Eq b
@@ -91,7 +98,7 @@ demuxByAndAggregateInChunksOf
   -> t m a
   -> t m (b, c)
 demuxByAndAggregateInChunksOf f i (FL.Fold step' begin' done') src
-  = SP.mapMaybe id $ SP.scan (FL.Fold step begin done) src
+  = catMaybes $ SP.scan (FL.Fold step begin done) src
   where
   begin = pure (mempty, Nothing)
   step (hm, _) a = do
@@ -242,8 +249,7 @@ firstOcc
   => t m a
   -> t m a
 firstOcc =
-  SP.mapMaybe id
-  .  SP.scan (FL.Fold step begin end)
+  catMaybes . SP.scan (FL.Fold step begin end)
   where
   step (x, _) a =
     pure (Set.insert a x, if Set.member a x then Nothing else Just a)
@@ -279,7 +285,7 @@ sampleOn
   -> t m (a -> b)
   -> t m b
 sampleOn src pulse =
-  SP.mapMaybe id $
+  catMaybes $
     SP.scan fld combined
   where
   combined =
@@ -302,7 +308,7 @@ applyWithLatestM
   -> t m b
   -> t m c
 applyWithLatestM f s1 s2 =
-  SP.mapMaybe id $
+  catMaybes $
     SP.scan fld combined
   where
   combined =
@@ -418,7 +424,7 @@ zipAsyncly'
   -> t m (a -> b)
   -> t m b
 zipAsyncly' aSrc fSrc =
-  SP.mapMaybe id $
+  catMaybes $
     SP.scan fld combined
   where
   combined =
@@ -460,7 +466,7 @@ firstOccWithin
   -> t m a
 firstOccWithin tickInterval timeThreshold src
   =
-  SP.mapMaybe id $
+  catMaybes $
     SP.scan
       (FL.Fold step begin end)
       srcWithTicker
@@ -539,7 +545,7 @@ withRateGaugeWithElements tagGenerator src =
   where
   measureAndRecord :: Direction -> LoggerConfig tag -> t m a
   measureAndRecord direction (LoggerConfig { logger, samplingRate }) =
-    SP.mapMaybe id $
+    catMaybes $
       SP.scan (FL.Fold step begin end) withTimer
     where
     step (counts, _) Nothing =
@@ -582,7 +588,7 @@ withThroughputGauge tag recordMeasurement f =
   where
   measureAndRecord :: Direction -> t m c -> t m c
   measureAndRecord direction src =
-    SP.mapMaybe id $
+    catMaybes $
       SP.scan (FL.Fold step begin end) withTimer
     where
     step (count, _) Nothing = liftIO (recordMeasurement tag direction count) $> (0, Nothing)
@@ -602,7 +608,7 @@ runTillEndOfEitherWith
   -> t m a
   -> t m a
 runTillEndOfEitherWith combine src1 src2 =
-  SP.mapMaybe id $
+  catMaybes $
   SP.takeWhile isJust $
     ((Just <$> src1) `S.serial` SP.yield Nothing)
       `combine`
@@ -613,31 +619,38 @@ compress
  . S.IsStream t
  => S.MonadAsync m
  => Monad (t m)
- => Int           -- Compression Level ranging between 0,9 | 0 : lowest compression high Speed, 9 : highest compression but slow
+ => Int -- Compression Level ranging between 0,9 | 0 : lowest compression high Speed, 9 : highest compression but slow
+ -> Zlib.WindowBits
  -> t m BS.ByteString
  -> t m BS.ByteString
-compress compressionLevel stream = do
-  deflate <- SP.yieldM $ liftIO $ Zlib.initDeflate compressionLevel (Zlib.WindowBits 31) --for GZip compression WindowBits will be 31
-  SP.mapM
-   (\bs -> liftIO $ do
-           Zlib.feedDeflate deflate bs
-           popperRes <- Zlib.flushDeflate deflate
-           pure $ case popperRes of
-                   Zlib.PRNext message -> message
-                   _ -> mempty) stream
+compress compressionLevel wb =
+  catMaybes
+  . SP.scan (FL.Fold step begin done)
+  where
+  begin =
+    (, Nothing) <$> liftIO (Zlib.initDeflate compressionLevel wb) --for GZip compression WindowBits will be 31
+  step (deflate, _) bs = liftIO $ do
+    popperRes <- Zlib.feedDeflate deflate bs `seq` Zlib.flushDeflate deflate
+    pure $ case popperRes of
+      Zlib.PRNext message -> (deflate, Just message)
+      _ -> (deflate, Nothing)
+  done = pure . snd
 
 decompress
  :: forall t m
  . S.IsStream t
  => S.MonadAsync m
  => Monad (t m)
- => t m BS.ByteString
+ => Zlib.WindowBits
  -> t m BS.ByteString
-decompress stream = do
-  inflate <- SP.yieldM $ liftIO $ Zlib.initInflate (Zlib.WindowBits 31)
-  SP.mapM
-   (\bs ->
-     liftIO $ do
-     popper <- Zlib.feedInflate inflate bs
-     void popper
-     Zlib.flushInflate inflate) stream
+ -> t m BS.ByteString
+decompress wb =
+  catMaybes
+  . SP.scan (FL.Fold step begin done)
+  where
+  begin =
+    (, Nothing) <$> liftIO (Zlib.initInflate wb)
+  step (inflate, _) bs =
+    (inflate,) . Just <$> liftIO (Zlib.feedInflate inflate bs `seq` Zlib.flushInflate inflate)
+  done =
+    pure . snd
