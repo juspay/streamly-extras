@@ -59,9 +59,19 @@ library
     -fwarn-incomplete-uni-patterns
     -threaded
     -with-rtsopts=-N
-    -fspec-constr-recursive=10
+    -fspec-constr-recursive=16
+    -fmax-worker-args=16
     -fno-ignore-asserts
     -ddump-minimal-imports
+    -rtsopts
+    -fomit-yields
+    -fexpose-all-unfoldings
+    ---fprof-auto
+    ---prof
+
+    ---fblock-layout-cfg
+
+
 
   exposed-modules: Streamly.Extra
 

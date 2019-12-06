@@ -82,7 +82,6 @@ demuxAndAggregateInChunks f chunkSize agg =
 demuxByAndAggregateInChunksOf
   :: Eq b
   => Ord b
-  => Show b
   => S.MonadAsync m
   => S.IsStream t
   => (a -> m b)
@@ -116,7 +115,7 @@ collectTillEndOrTimeout
   -> S.SerialT m (Maybe [a])
 collectTillEndOrTimeout keyFn isEnd timeout src =
   liftIO TChan.newTChanIO >>= \chan ->
-    completedSessionStream chan `S.parallel` incompletedSessionsStream chan
+    completedSessionStream chan `S.async` incompletedSessionsStream chan
   where
     completedSessionStream c =
       SP.scan
@@ -169,9 +168,8 @@ lineStream sock parser =
   . fmap (fromMaybe mempty)
   . SP.takeWhile isJust $
     fst <$>
-      S.maxBuffer (-1)
         (SP.iterateM (\(_, buf) -> do
-          b <- catchError (liftIO . recv sock $ 4096) (\_ -> pure mempty)
+          b <- catchError (liftIO . recv sock $ (32 * 1024)) (\_ -> pure mempty)
           if BS.null b
             then (liftIO . close $ sock) $> (Nothing, b)
           else buf <> b & pure . parser)
@@ -188,7 +186,7 @@ runAllWith
 runAllWith combine fs src = do
   writeChan' <- liftIO TChan.newBroadcastTChanIO
   SP.mapM (liftIO . STM.atomically . TChan.writeTChan writeChan') src
-    `S.parallel`
+    `S.async`
     S.forEachWith combine fs (\f -> do
       chan' <- liftIO $ STM.atomically $ TChan.dupTChan writeChan'
       f $ SP.repeatM $ liftIO $
@@ -284,7 +282,7 @@ sampleOn src pulse =
   where
   combined =
     runTillEndOfEitherWith
-      S.parallel (Left <$> src) (Right <$> pulse)
+      S.async (Left <$> src) (Right <$> pulse)
   fld = FL.Fold step begin done
   -- First is the latest value of source,
   -- second is the value which to be yield'ed
@@ -307,13 +305,13 @@ applyWithLatestM f s1 s2 =
   where
   combined =
     runTillEndOfEitherWith
-      S.parallel (Left <$> s1) (Right <$> s2)
+      S.async (Left <$> s1) (Right <$> s2)
   fld = FL.Fold step begin done
   begin = pure (Nothing, Nothing)
-  step (Just b, _) (Left !a) = (Just b,) . Just <$> f a b
+  step (Just b, _) (Left a) = (Just b,) . Just <$> (a `seq` b `seq` f a b)
   step (Nothing, _) (Left _) = pure (Nothing, Nothing)
-  step _ (Right !b) = pure (Just b, Nothing)
-  done (_, !out) = pure out
+  step _ (Right b) = pure (Just b, Nothing)
+  done (_, out) = pure out
 -- | Stream which produces values as fast as the faster stream(the first argument)
 --   using the latest value from the slower stream(the second argument)
 --   Note : Doesn't produce values until one value is yield'ed from each stream
@@ -422,7 +420,7 @@ zipAsyncly' aSrc fSrc =
     SP.scan fld combined
   where
   combined =
-    (Left <$> aSrc) `S.parallel` (Right <$> fSrc)
+    (Left <$> aSrc) `S.async` (Right <$> fSrc)
   fld = FL.Fold step begin done
   -- First is the latest value of a -> b,
   -- Second is the latest value of a,
@@ -517,12 +515,13 @@ counts = FL.Fold step begin end
   end = pure
 
 data Direction = IN | OUT deriving (Show, Eq, Ord)
-type Logger tag = tag -> Direction -> Int -> IO ()
+type Logger tag = tag -> Int -> IO ()
 data LoggerConfig tag
   = LoggerConfig
-  { logger :: Logger tag
-  , samplingRate :: Double {-Rate of measurement in seconds-}}
+  { logger :: !(Logger tag)
+  , samplingRate :: !Double {-Rate of measurement in seconds-}}
 
+{-# INLINE withRateGaugeWithElements #-}
 withRateGaugeWithElements
   :: forall t m a tag
   . Applicative m
@@ -535,24 +534,27 @@ withRateGaugeWithElements
   -> t m a
   -> t m a
 withRateGaugeWithElements tagGenerator src =
-  ask >>= measureAndRecord IN
+  ask >>= measureAndRecord
   where
-  measureAndRecord :: Direction -> LoggerConfig tag -> t m a
-  measureAndRecord direction (LoggerConfig { logger, samplingRate }) =
+  measureAndRecord :: LoggerConfig tag -> t m a
+  measureAndRecord (LoggerConfig { logger, samplingRate }) =
     SP.mapMaybe id $
       SP.scan (FL.Fold step begin end) withTimer
     where
     step (counts, _) Nothing =
       (Map.map (const 0) counts, Nothing) <$
-        Map.traverseWithKey (\tag count -> liftIO $ logger tag direction count) counts
-    step (counts, _) (Just a) =
-      pure (Map.alter (Just . maybe 1 (+1)) (tagGenerator a) counts, Just a)
+        Map.traverseWithKey (\tag count -> liftIO $ logger tag count) counts
+    step (!counts, _) (Just a) =
+      let
+        !key = tagGenerator a
+      in pure (Map.alter (Just . maybe 1 (+1)) key counts, Just a)
     begin = pure (Map.empty, Nothing)
     end = pure . snd
     withTimer =
-      runTillEndOfEitherWith S.parallel (Just <$> src) (Nothing <$ timeout)
+      runTillEndOfEitherWith S.async (Just <$> src) (Nothing <$ timeout)
     timeout = SP.repeatM $ liftIO $ threadDelay (fromEnum (samplingRate * 1_000_000))
 
+{-# INLINE withRateGauge #-}
 withRateGauge
   :: forall t m a tag
   . Applicative m
@@ -566,32 +568,33 @@ withRateGauge
   -> t m a
 withRateGauge tag = withRateGaugeWithElements (const tag)
 
-withThroughputGauge
-  :: forall t m a b tag
-  . Applicative m
-  => S.MonadAsync m
-  => S.IsStream t
-  => Monad (t m)
-  => tag
-  -> Logger tag
-  -> (t m a -> t m b)
-  -> t m a
-  -> t m b
-withThroughputGauge tag recordMeasurement f =
-  measureAndRecord OUT . f . measureAndRecord IN
-  where
-  measureAndRecord :: Direction -> t m c -> t m c
-  measureAndRecord direction src =
-    SP.mapMaybe id $
-      SP.scan (FL.Fold step begin end) withTimer
-    where
-    step (count, _) Nothing = liftIO (recordMeasurement tag direction count) $> (0, Nothing)
-    step (count, _) (Just a) = pure (count + 1, Just a)
-    begin = pure (0, Nothing)
-    end = pure . snd
-    withTimer = (Just <$> src) `S.parallel` (Nothing <$ timeout)
-    timeout = SP.repeatM $ liftIO $ threadDelay 1000000
+-- withThroughputGauge
+--   :: forall t m a b tag
+--   . Applicative m
+--   => S.MonadAsync m
+--   => S.IsStream t
+--   => Monad (t m)
+--   => tag
+--   -> Logger tag
+--   -> (t m a -> t m b)
+--   -> t m a
+--   -> t m b
+-- withThroughputGauge tag recordMeasurement f =
+--   measureAndRecord OUT . f . measureAndRecord IN
+--   where
+--   measureAndRecord :: Direction -> t m c -> t m c
+--   measureAndRecord direction src =
+--     SP.mapMaybe id $
+--       SP.scan (FL.Fold step begin end) withTimer
+--     where
+--     step (count, _) Nothing = liftIO (recordMeasurement tag direction count) $> (0, Nothing)
+--     step (!count, _) (Just a) = pure (count + 1, Just a)
+--     begin = pure (0, Nothing)
+--     end = pure . snd
+--     withTimer = (Just <$> src) `S.async` (Nothing <$ timeout)
+--     timeout = SP.repeatM $ liftIO $ threadDelay 1000000
 
+{-# INLINE runTillEndOfEitherWith #-}
 runTillEndOfEitherWith
   :: forall t m a
   . S.IsStream t
