@@ -291,6 +291,7 @@ sampleOn src pulse =
   begin = pure (Nothing, Nothing)
   done (_, out) = pure out
 
+{-# INLINE applyWithLatestM #-}
 applyWithLatestM
   :: S.MonadAsync m
   => S.IsStream t
@@ -308,9 +309,9 @@ applyWithLatestM f s1 s2 =
       S.async (Left <$> s1) (Right <$> s2)
   fld = FL.Fold step begin done
   begin = pure (Nothing, Nothing)
-  step (Just b, _) (Left a) = (Just b,) . Just <$> (a `seq` b `seq` f a b)
+  step (Just !b, _) (Left !a) = (Just b,) . Just <$> f a b
   step (Nothing, _) (Left _) = pure (Nothing, Nothing)
-  step _ (Right b) = pure (Just b, Nothing)
+  step _ (Right !b) = pure (Just b, Nothing)
   done (_, out) = pure out
 -- | Stream which produces values as fast as the faster stream(the first argument)
 --   using the latest value from the slower stream(the second argument)
@@ -342,6 +343,7 @@ applyWithLatestM f s1 s2 =
 --   (28,30)
 --   (30,32)
 --   (32,30)
+{-# INLINE applyWithLatest #-}
 applyWithLatest
   :: S.MonadAsync m
   => S.IsStream t
