@@ -33,6 +33,7 @@ import           Network.Socket ( Socket(..), close)
 import           Network.Socket.ByteString (recv)
 import qualified Streamly as S
 import qualified Streamly.Internal.Data.Fold as FL
+import qualified Streamly.Internal.Data.Stream.Parallel as Par
 import qualified Streamly.Prelude as SP
 
 -- | Group the stream into a smaller set of keys and fold elements of a specific key
@@ -124,9 +125,9 @@ collectTillEndOrTimeout keyFn isEnd timeout src =
           -- State is (IORef (HM b (ThreadId, [a])), IORef (Maybe [a]))
           -- First HM is a IORef because it should be modifiable by another thread
           -- Second is a IORef because every time an extract is called, it has to be cleared
-          (\(hmRef, outRef) a -> liftIO $ do
-            let b = keyFn a
-            mTIdAndLogs <- Map.lookup b <$> readIORef hmRef
+          (\(hmRef, outRef) !a -> liftIO $ do
+            let !b = keyFn a
+            !mTIdAndLogs <- Map.lookup b <$> readIORef hmRef
             case mTIdAndLogs of
               Nothing ->
                 if isEnd [a]
@@ -141,7 +142,7 @@ collectTillEndOrTimeout keyFn isEnd timeout src =
                   atomicModifyIORef' hmRef (\hm -> (Map.insert b (tId, [a]) hm, ()))
                   atomicWriteIORef outRef Nothing
                   pure (hmRef, outRef)
-              Just (tId, as) ->
+              Just (!tId, !as) ->
                 let as' = a : as
                 in (hmRef, outRef) <$
                   if isEnd as'
@@ -177,23 +178,13 @@ lineStream sock parser =
           else buf <> b & pure . parser)
           (pure (Just mempty, mempty)))
 
-runAllWith
+distributeAsync_
   :: S.MonadAsync m
   => S.IsStream t
-  => MonadIO (t m)
-  => (forall c. t m c -> t m c -> t m c)
-  -> [ t m a -> t m () ]
+  => [ t m a -> m () ]
   -> t m a
-  -> t m ()
-runAllWith combine fs src = do
-  writeChan' <- liftIO TChan.newBroadcastTChanIO
-  SP.mapM (liftIO . STM.atomically . TChan.writeTChan writeChan') src
-    `S.parallel`
-    S.forEachWith combine fs (\f -> do
-      chan' <- liftIO $ STM.atomically $ TChan.dupTChan writeChan'
-      f $ SP.repeatM $ liftIO $
-        STM.atomically $
-          TChan.readTChan chan')
+  -> t m a
+distributeAsync_ fs src = foldr Par.tapAsync src fs
 
 -- Works only on infinite streams.
 duplicate
@@ -542,11 +533,12 @@ withRateGaugeWithElements tagGenerator src =
     SP.mapMaybe id $
       SP.scan (FL.Fold step begin end) withTimer
     where
-    step (counts, _) Nothing =
+    step (!counts, _) Nothing =
       (Map.map (const 0) counts, Nothing) <$
-        Map.traverseWithKey (\tag count -> liftIO $ logger tag direction count) counts
-    step (counts, _) (Just a) =
-      pure (Map.alter (Just . maybe 1 (+1)) (tagGenerator a) counts, Just a)
+        Map.traverseWithKey (\tag !count -> liftIO $ logger tag direction count) counts
+    step (!counts, _) (Just a) =
+      let !key = tagGenerator a
+      in pure (Map.alter (Just . maybe 1 (+1)) key counts, Just a)
     begin = pure (Map.empty, Nothing)
     end = pure . snd
     withTimer =
@@ -564,7 +556,7 @@ withRateGauge
   => tag
   -> t m a
   -> t m a
-withRateGauge tag = withRateGaugeWithElements (const tag)
+withRateGauge !tag = withRateGaugeWithElements (const tag)
 
 withThroughputGauge
   :: forall t m a b tag
