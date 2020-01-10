@@ -17,11 +17,17 @@ let
             super.ghc // { withPackages = if withHoogle then super.ghc.withHoogle else super.ghc ; };
           ghcWithPackages =
             self.ghc.withPackages;
-          # Haskell actually has a broken package called vision
           streamly-extras =
             self.callPackage ./streamly-extras.nix { };
           streamly =
-            self.callPackage ./streamly.nix { };
+            pkgs.haskell.lib.dontCheck
+              (self.callCabal2nix "streamly" (pkgs.fetchgit {
+                url = "https://github.com/composewell/streamly.git";
+                rev = "83cbe5d14cc8c383aa7f2975743742a0bc16e35e";
+                sha256 = "1apil2qz5a0bc6y82azb80njg0wp44hj3d8cxq5m51y8l66pvqva";
+                fetchSubmodules = true;
+              }) { });
+
         };
       };
     };
