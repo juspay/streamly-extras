@@ -125,37 +125,37 @@ collectTillEndOrTimeout keyFn isEnd timeout src =
           -- State is (IORef (HM b (ThreadId, [a])), IORef (Maybe [a]))
           -- First HM is a IORef because it should be modifiable by another thread
           -- Second is a IORef because every time an extract is called, it has to be cleared
-          (\(hmRef, outRef) !a -> liftIO $ do
+          (\(!hmRef, !outRef) !a -> liftIO $ do
             let !b = keyFn a
-            !mTIdAndLogs <- Map.lookup b <$> readIORef hmRef
+            mTIdAndLogs <- Map.lookup b <$> readIORef hmRef
             case mTIdAndLogs of
               Nothing ->
                 if isEnd [a]
                 then
                   (hmRef, outRef) <$ atomicWriteIORef outRef (Just [a])
                 else do
-                  tId <- liftIO $
+                  !tId <- liftIO $
                     forkIO $
                       threadDelay (timeout * 1000000)
-                      *> atomicModifyIORef' hmRef (\hm -> (Map.delete b hm, snd <$> Map.lookup b hm))
+                      *> atomicModifyIORef' hmRef (\(!hm) -> (Map.delete b hm, snd <$> Map.lookup b hm))
                         >>= STM.atomically . TChan.writeTChan c
-                  atomicModifyIORef' hmRef (\hm -> (Map.insert b (tId, [a]) hm, ()))
+                  atomicModifyIORef' hmRef (\(!hm) -> (Map.insert b (tId, [a]) hm, ()))
                   atomicWriteIORef outRef Nothing
                   pure (hmRef, outRef)
               Just (!tId, !as) ->
-                let as' = a : as
+                let !as' = a : as
                 in (hmRef, outRef) <$
                   if isEnd as'
                     then
                       killThread tId
                       *> atomicWriteIORef outRef (Just as')
-                      *> atomicModifyIORef' hmRef (\hm -> (Map.delete b hm, ()))
+                      *> atomicModifyIORef' hmRef (\(!hm) -> (Map.delete b hm, ()))
                     else
                       atomicWriteIORef outRef Nothing
-                      *> atomicModifyIORef' hmRef (\hm -> (Map.insert b (tId, as') hm, ()))
+                      *> atomicModifyIORef' hmRef (\(!hm) -> (Map.insert b (tId, as') hm, ()))
           )
           ((,) <$> liftIO (newIORef mempty) <*> liftIO (newIORef mempty))
-          (\(_, outRef) -> liftIO $ atomicModifyIORef' outRef (\mAs -> (Nothing, mAs))))
+          (\(_, outRef) -> liftIO $ atomicModifyIORef' outRef (\(!mAs) -> (Nothing, mAs))))
         src
     incompletedSessionsStream c = SP.repeatM (liftIO $ STM.atomically $ TChan.readTChan c)
 
