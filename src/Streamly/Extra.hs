@@ -37,6 +37,7 @@ import qualified Streamly.Internal.Data.Stream.Parallel as Par
 import qualified Streamly.Prelude as SP
 
 -- | Group the stream into a smaller set of keys and fold elements of a specific key
+{-# INLINE demuxByM #-}
 demuxByM
   :: Eq b
   => Ord b
@@ -54,6 +55,7 @@ demuxByM f (FL.Fold step' begin' done')
         (maybe begin' pure (Map.lookup b hm) >>= flip step' a)
     done = fmap Map.toList <<< mapM done'
 
+{-# INLINE demuxAndAggregateByInterval #-}
 demuxAndAggregateByInterval
   :: Eq b
   => Ord b
@@ -67,6 +69,7 @@ demuxAndAggregateByInterval
 demuxAndAggregateByInterval f delay agg =
   SP.intervalsOf delay (demuxByM f agg)
 
+{-# INLINE demuxAndAggregateInChunks #-}
 demuxAndAggregateInChunks
   :: Eq b
   => Ord b
@@ -80,6 +83,7 @@ demuxAndAggregateInChunks
 demuxAndAggregateInChunks f chunkSize agg =
   SP.chunksOf chunkSize (demuxByM f agg)
 
+{-# INLINE demuxByAndAggregateInChunksOf #-}
 demuxByAndAggregateInChunksOf
   :: Eq b
   => Ord b
@@ -106,6 +110,7 @@ demuxByAndAggregateInChunksOf f i (FL.Fold step' begin' done') src
 
 -- | Collects elements from the stream into a key given by the `keyFn`
 --   Once the stream for that key is completed or on a configurable timeout, it is available on the output stream.
+{-# INLINE collectTillEndOrTimeout #-}
 collectTillEndOrTimeout
   :: Eq b
   => S.MonadAsync m
@@ -160,6 +165,7 @@ collectTillEndOrTimeout keyFn isEnd timeout src =
     incompletedSessionsStream c = SP.repeatM (liftIO $ STM.atomically $ TChan.readTChan c)
 
 -- Reads lines from a socket and produces a parsed stream
+{-# INLINE lineStream #-}
 lineStream
   :: (S.MonadAsync m, MonadMask m, MonadError e m)
   => Socket
@@ -178,6 +184,7 @@ lineStream sock parser =
           else buf <> b & pure . parser)
           (pure (Just mempty, mempty)))
 
+{-# INLINE distributeAsync_ #-}
 distributeAsync_
   :: S.MonadAsync m
   => S.IsStream t
@@ -187,6 +194,7 @@ distributeAsync_
 distributeAsync_ fs src = foldr Par.tapAsync src fs
 
 -- Works only on infinite streams.
+{-# INLINE duplicate #-}
 duplicate
   :: S.MonadAsync m
   => S.IsStream t
@@ -208,6 +216,7 @@ duplicate src = do
       SP.repeatM (liftIO $ STM.atomically $ TChan.readTChan readChan2)
   pure (fmap (fromRight undefined) $ SP.filter isRight $ (Left <$> writes) `S.async` (Right <$> reads1), reads2)
 
+{-# INLINE tap #-}
 tap
   :: S.MonadAsync m
   => S.IsStream t
@@ -226,6 +235,7 @@ tap s f = SP.mapM (\x -> x <$ f x) s
 
 infixl 5 |>>
 
+{-# INLINE firstOcc #-}
 firstOcc
   :: Ord a
   => Monad m
@@ -262,6 +272,7 @@ firstOcc =
 --   (46,44)
 --   (54,56)
 --   (62,60)
+{-# INLINE sampleOn #-}
 sampleOn
   :: S.MonadAsync m
   => S.IsStream t
@@ -284,6 +295,7 @@ sampleOn src pulse =
   begin = pure (Nothing, Nothing)
   done (_, out) = pure out
 
+{-# INLINE applyWithLatestM #-}
 applyWithLatestM
   :: S.MonadAsync m
   => S.IsStream t
@@ -335,6 +347,7 @@ applyWithLatestM f s1 s2 =
 --   (28,30)
 --   (30,32)
 --   (32,30)
+{-# INLINE applyWithLatest #-}
 applyWithLatest
   :: S.MonadAsync m
   => S.IsStream t
@@ -401,6 +414,7 @@ applyWithLatest =
 --   (26,28)
 --   (28,30)
 --   (30,32)
+{-# INLINE zipAsyncly' #-}
 zipAsyncly'
   :: S.MonadAsync m
   => S.IsStream t
@@ -440,6 +454,7 @@ zipAsyncly' aSrc fSrc =
 --   >>> SP.mapM_ print $ firstOccWithin 1000000 5 num1Every1MilliSec
 --   New elements will be yielded only once per @tickInterval@, so choose it
 --   depending on the needed granularity.
+{-# INLINE firstOccWithin #-}
 firstOccWithin
   :: Ord a
   => S.MonadAsync m
@@ -472,6 +487,7 @@ firstOccWithin tickInterval timeThreshold src
   srcWithTicker =
     src `applyWithLatest` ((\i a -> (a, i)) <$> ticker)
 
+{-# INLINE groupConsecutiveBy #-}
 groupConsecutiveBy
   :: Eq b
   => Monad m
@@ -496,6 +512,7 @@ groupConsecutiveBy f = FL.Fold step begin end
       (\newElem -> pure (Just (f newElem), [newElem], Nothing))
       maybeNewElem
 
+{-# INLINE counts #-}
 counts
   :: Applicative m
   => Ord a
@@ -514,6 +531,7 @@ data LoggerConfig tag
   { logger :: Logger tag
   , samplingRate :: Double {-Rate of measurement in seconds-}}
 
+{-# INLINE withRateGaugeWithElements #-}
 withRateGaugeWithElements
   :: forall t m a tag
   . Applicative m
@@ -545,6 +563,7 @@ withRateGaugeWithElements tagGenerator src =
       runTillEndOfEitherWith S.parallel (Just <$> src) (Nothing <$ timeout)
     timeout = SP.repeatM $ liftIO $ threadDelay (fromEnum (samplingRate * 1_000_000))
 
+{-# INLINE withRateGauge #-}
 withRateGauge
   :: forall t m a tag
   . Applicative m
@@ -558,6 +577,7 @@ withRateGauge
   -> t m a
 withRateGauge !tag = withRateGaugeWithElements (const tag)
 
+{-# INLINE withThroughputGauge #-}
 withThroughputGauge
   :: forall t m a b tag
   . Applicative m
@@ -584,6 +604,7 @@ withThroughputGauge tag recordMeasurement f =
     withTimer = (Just <$> src) `S.parallel` (Nothing <$ timeout)
     timeout = SP.repeatM $ liftIO $ threadDelay 1000000
 
+{-# INLINE runTillEndOfEitherWith #-}
 runTillEndOfEitherWith
   :: forall t m a
   . S.IsStream t
@@ -600,6 +621,7 @@ runTillEndOfEitherWith combine src1 src2 =
       `combine`
     ((Just <$> src2) `S.serial` SP.yield Nothing)
 
+{-# INLINE compress #-}
 compress
  :: forall t m
  . S.IsStream t
@@ -618,6 +640,7 @@ compress compressionLevel stream = do
                    Zlib.PRNext message -> message
                    _ -> mempty) stream
 
+{-# INLINE decompress #-}
 decompress
  :: forall t m
  . S.IsStream t
