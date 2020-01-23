@@ -35,6 +35,8 @@ import qualified Streamly as S
 import qualified Streamly.Internal.Data.Fold as FL
 import qualified Streamly.Internal.Data.Stream.Parallel as Par
 import qualified Streamly.Prelude as SP
+import qualified Data.List.NonEmpty as NEL
+import Data.List.NonEmpty (NonEmpty(..))
 
 -- | Group the stream into a smaller set of keys and fold elements of a specific key
 demuxByM
@@ -111,13 +113,14 @@ collectTillEndOrTimeout
   => S.MonadAsync m
   => Ord b
   => (a -> b)
-  -> ([a] -> Bool)
+  -> (a -> Bool)
   -> Int
   -> S.SerialT m a
-  -> S.SerialT m (Maybe [a])
+  -> S.SerialT m (b, NonEmpty a)
 collectTillEndOrTimeout keyFn isEnd timeout src =
-  liftIO TChan.newTChanIO >>= \chan ->
-    completedSessionStream chan `S.parallel` incompletedSessionsStream chan
+  SP.mapMaybe id $
+    liftIO TChan.newTChanIO >>= \chan ->
+      completedSessionStream chan `S.parallel` incompletedSessionsStream chan
   where
     completedSessionStream c =
       SP.scan
@@ -130,31 +133,31 @@ collectTillEndOrTimeout keyFn isEnd timeout src =
             mTIdAndLogs <- Map.lookup b <$> readIORef hmRef
             case mTIdAndLogs of
               Nothing ->
-                if isEnd [a]
+                if isEnd a
                 then
-                  (hmRef, outRef) <$ atomicWriteIORef outRef (Just [a])
+                  (hmRef, outRef) <$ atomicWriteIORef outRef (Just $ (b, pure a))
                 else do
                   !tId <- liftIO $
-                    forkIO $
+                    forkIO $ do
                       threadDelay (timeout * 1000000)
-                      *> atomicModifyIORef' hmRef (\(!hm) -> (Map.delete b hm, snd <$> Map.lookup b hm))
-                        >>= STM.atomically . TChan.writeTChan c
-                  atomicModifyIORef' hmRef (\(!hm) -> (Map.insert b (tId, [a]) hm, ()))
+                      out <-  atomicModifyIORef' hmRef (\(!hm) -> (Map.delete b hm, (b,) . snd <$> Map.lookup b hm))
+                      STM.atomically $ TChan.writeTChan c out
+                  atomicModifyIORef' hmRef (\(!hm) -> (Map.insert b (tId, pure a) hm, ()))
                   atomicWriteIORef outRef Nothing
                   pure (hmRef, outRef)
               Just (!tId, !as) ->
-                let !as' = a : as
+                let !as' = a :| NEL.toList as
                 in (hmRef, outRef) <$
-                  if isEnd as'
+                  if isEnd a
                     then
                       killThread tId
-                      *> atomicWriteIORef outRef (Just as')
+                      *> atomicWriteIORef outRef (Just (b, as'))
                       *> atomicModifyIORef' hmRef (\(!hm) -> (Map.delete b hm, ()))
                     else
                       atomicWriteIORef outRef Nothing
                       *> atomicModifyIORef' hmRef (\(!hm) -> (Map.insert b (tId, as') hm, ()))
           )
-          ((,) <$> liftIO (newIORef mempty) <*> liftIO (newIORef mempty))
+          ((,) <$> liftIO (newIORef mempty) <*> liftIO (newIORef Nothing))
           (\(_, outRef) -> liftIO $ atomicModifyIORef' outRef (\(!mAs) -> (Nothing, mAs))))
         src
     incompletedSessionsStream c = SP.repeatM (liftIO $ STM.atomically $ TChan.readTChan c)
