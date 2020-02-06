@@ -14,6 +14,7 @@ module Streamly.Extra where
 import           Control.Arrow
 import           Control.Concurrent hiding (yield)
 import qualified Control.Concurrent.STM.TChan as TChan
+import           Control.Monad (when)
 import           Control.Monad.Catch (MonadMask)
 import           Control.Monad.Except (catchError, MonadError)
 import           Control.Monad.IO.Class
@@ -36,6 +37,7 @@ import qualified Streamly.Internal.Data.Stream.Parallel as Par
 import           Streamly.Internal.Data.Time.Clock (Clock(..), getTime)
 import qualified Streamly.Prelude as SP
 import qualified Streamly.Internal.Prelude as SP
+import           System.IO (hPutStrLn, stderr)
 import qualified Data.List.NonEmpty as NEL
 import Data.List.NonEmpty (NonEmpty(..))
 
@@ -124,8 +126,25 @@ collectTillEndOrTimeout keyFn isEnd timeout src =
 
     where
 
-    sessionInfo x = liftIO $ (keyFn x, x, isEnd x,) <$> getTime Monotonic
-    toNonEmpty = fmap NEL.fromList FL.toList
+    sessionInfo x = liftIO $ (keyFn x, x,) <$> getTime Monotonic
+    toNonEmpty = FL.Fold step initial extract
+
+        where
+
+        maxCount = 5000
+        initial = return (Right ([],0 :: Int))
+        step (Right (xs,n)) x =
+            if n >= maxCount - 1 || isEnd x
+            then do
+                when (n >= maxCount - 1)
+                    $ liftIO $ hPutStrLn stderr
+                    $ "Session reached max events limit ["
+                      ++ show maxCount ++ "], aborting"
+                return $ Left (x : xs)
+            else return $ Right ((x : xs), n + 1)
+        step acc _ = return acc
+        extract (Right (xs,_)) = return $ Right $ NEL.fromList (reverse xs)
+        extract (Left xs) = return $ Left $ NEL.fromList (reverse xs)
 
 -- Reads lines from a socket and produces a parsed stream
 lineStream
