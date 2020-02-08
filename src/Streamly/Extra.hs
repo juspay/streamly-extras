@@ -122,9 +122,19 @@ collectTillEndOrTimeout
   -> S.SerialT m (b, NonEmpty a)
 collectTillEndOrTimeout keyFn isEnd timeout src =
       SP.mapM sessionInfo src
-    & SP.classifySessionsOf (fromIntegral timeout) toNonEmpty
+    & SP.classifySessionsOf (fromIntegral timeout) ejectWhen toNonEmpty
 
     where
+
+    -- Eject old sessions when the cache limit is reached
+    ejectWhen n =
+        if n > 100000
+        then do
+            liftIO $ hPutStrLn stderr
+                $ "Reached max sessions limit ["
+                  ++ show n ++ "], ejecting session"
+            return True
+        else return False
 
     sessionInfo x = liftIO $ (keyFn x, x,) <$> getTime Monotonic
     toNonEmpty = FL.Fold step initial extract
