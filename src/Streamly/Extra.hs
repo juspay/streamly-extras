@@ -553,7 +553,11 @@ withRateGauge
   => tag
   -> t m a
   -> t m a
-withRateGauge !tag = withRateGaugeWithElements (const tag)
+withRateGauge !tag src = do
+    LoggerConfig {logger, samplingRate} <- ask
+    let transform = SP.rollingMap (-) . SP.delayPost samplingRate
+    let logFn = liftIO . logger tag IN
+    SP.pollCounts transform (FL.drainBy logFn) src
 
 withThroughputGauge
   :: forall t m a b tag
