@@ -14,6 +14,7 @@ module Streamly.Extra where
 import           Control.Arrow
 import           Control.Concurrent hiding (yield)
 import qualified Control.Concurrent.STM.TChan as TChan
+import           Control.Monad (when)
 import           Control.Monad.Catch (MonadMask)
 import           Control.Monad.Except (catchError, MonadError)
 import           Control.Monad.IO.Class
@@ -24,7 +25,6 @@ import           Data.Function
 import           Data.Functor
 import           Data.Either
 import qualified Data.Internal.SortedSet as ZSet
-import           Data.IORef
 import qualified Data.Map.Strict as Map
 import           Data.Maybe (fromMaybe, isJust)
 import qualified Data.Streaming.Zlib as Zlib
@@ -34,7 +34,10 @@ import           Network.Socket.ByteString (recv)
 import qualified Streamly as S
 import qualified Streamly.Internal.Data.Fold as FL
 import qualified Streamly.Internal.Data.Stream.Parallel as Par
+import           Streamly.Internal.Data.Time.Clock (Clock(..), getTime)
 import qualified Streamly.Prelude as SP
+import qualified Streamly.Internal.Prelude as SP
+import           System.IO (hPutStrLn, stderr)
 import qualified Data.List.NonEmpty as NEL
 import Data.List.NonEmpty (NonEmpty(..))
 
@@ -118,49 +121,40 @@ collectTillEndOrTimeout
   -> S.SerialT m a
   -> S.SerialT m (b, NonEmpty a)
 collectTillEndOrTimeout keyFn isEnd timeout src =
-  SP.mapMaybe id $
-    liftIO TChan.newTChanIO >>= \chan ->
-      completedSessionStream chan `S.parallel` incompletedSessionsStream chan
-  where
-    completedSessionStream c =
-      SP.scan
-        (FL.Fold
-          -- State is (IORef (HM b (ThreadId, [a])), IORef (Maybe [a]))
-          -- First HM is a IORef because it should be modifiable by another thread
-          -- Second is a IORef because every time an extract is called, it has to be cleared
-          (\(!hmRef, !outRef) !a -> liftIO $ do
-            let !b = keyFn a
-            mTIdAndLogs <- Map.lookup b <$> readIORef hmRef
-            case mTIdAndLogs of
-              Nothing ->
-                if isEnd a
-                then
-                  (hmRef, outRef) <$ atomicWriteIORef outRef (Just $ (b, pure a))
-                else do
-                  !tId <- liftIO $
-                    forkIO $ do
-                      threadDelay (timeout * 1000000)
-                      out <-  atomicModifyIORef' hmRef (\(!hm) -> (Map.delete b hm, (b,) . snd <$> Map.lookup b hm))
-                      STM.atomically $ TChan.writeTChan c out
-                  atomicModifyIORef' hmRef (\(!hm) -> (Map.insert b (tId, pure a) hm, ()))
-                  atomicWriteIORef outRef Nothing
-                  pure (hmRef, outRef)
-              Just (!tId, !as) ->
-                let !as' = a :| NEL.toList as
-                in (hmRef, outRef) <$
-                  if isEnd a
-                    then
-                      killThread tId
-                      *> atomicWriteIORef outRef (Just (b, as'))
-                      *> atomicModifyIORef' hmRef (\(!hm) -> (Map.delete b hm, ()))
-                    else
-                      atomicWriteIORef outRef Nothing
-                      *> atomicModifyIORef' hmRef (\(!hm) -> (Map.insert b (tId, as') hm, ()))
-          )
-          ((,) <$> liftIO (newIORef mempty) <*> liftIO (newIORef Nothing))
-          (\(_, outRef) -> liftIO $ atomicModifyIORef' outRef (\(!mAs) -> (Nothing, mAs))))
-        src
-    incompletedSessionsStream c = SP.repeatM (liftIO $ STM.atomically $ TChan.readTChan c)
+      SP.mapM sessionInfo src
+    & SP.classifySessionsOf (fromIntegral timeout) ejectWhen toNonEmpty
+
+    where
+
+    -- Eject old sessions when the cache limit is reached
+    ejectWhen n =
+        if n > 100000
+        then do
+            liftIO $ hPutStrLn stderr
+                $ "Reached max sessions limit ["
+                  ++ show n ++ "], ejecting session"
+            return True
+        else return False
+
+    sessionInfo x = liftIO $ (keyFn x, x,) <$> getTime Monotonic
+    toNonEmpty = FL.Fold step initial extract
+
+        where
+
+        maxCount = 5000
+        initial = return (Right ([],0 :: Int))
+        step (Right (xs,n)) x =
+            if n >= maxCount - 1 || isEnd x
+            then do
+                when (n >= maxCount - 1)
+                    $ liftIO $ hPutStrLn stderr
+                    $ "Session reached max events limit ["
+                      ++ show maxCount ++ "], aborting"
+                return $ Left (x : xs)
+            else return $ Right ((x : xs), n + 1)
+        step acc _ = return acc
+        extract (Right (xs,_)) = return $ Right $ NEL.fromList (reverse xs)
+        extract (Left xs) = return $ Left $ NEL.fromList (reverse xs)
 
 -- Reads lines from a socket and produces a parsed stream
 lineStream
