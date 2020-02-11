@@ -23,8 +23,8 @@ let
             pkgs.haskell.lib.dontCheck
               (self.callCabal2nix "streamly" (pkgs.fetchgit {
                 url = "https://github.com/composewell/streamly.git";
-                rev = "83cbe5d14cc8c383aa7f2975743742a0bc16e35e";
-                sha256 = "1apil2qz5a0bc6y82azb80njg0wp44hj3d8cxq5m51y8l66pvqva";
+                rev = "99a9b612ec07890c1b0defd41f2f958306dea6fb";
+                sha256 = "07swnkca0fwafaf89ndhp33gan4wy22ing9ya4ggn0snrylkkd54";
                 fetchSubmodules = true;
               }) { });
 
