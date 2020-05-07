@@ -3,13 +3,13 @@ module Data.Internal.SortedSet where
 
 import Prelude
 import Data.Map (Map)
-import qualified Data.Map as Map
+import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Set (Set)
 
 data ZSet k v = ZSet
-  { scores  :: Map k v
-  , byScore :: Map v (Set k) } deriving Show
+  { scores  :: !(Map k v)
+  , byScore :: !(Map v (Set k)) } deriving Show
 
 type MultiMap k v = Map.Map k (Set v)
 

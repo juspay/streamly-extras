@@ -3,12 +3,11 @@
 }:
 let
   inherit (import <nixpkgs> {}) fetchFromGitHub;
-  nixpkgs = fetchFromGitHub {
-    owner = "NixOS";
-    repo = "nixpkgs";
-    rev = "20.03";
+  nixpkgs = builtins.fetchTarball {
+    url = "https://github.com/NixOS/nixpkgs/archive/20.03.tar.gz";
     sha256 = "0182ys095dfx02vl2a20j1hz92dx3mfgz2a6fhn31bqlp1wa8hlq";
   };
+
   config = {
     packageOverrides = pkgs: rec {
       haskellPackages = pkgs.haskellPackages.override {
