@@ -233,7 +233,7 @@ firstOcc =
   SP.mapMaybe id
   .  SP.scan (FL.Fold step begin end)
   where
-  step (x, _) a =
+  step (!x, _) !a =
     pure (Set.insert a x, if Set.member a x then Nothing else Just a)
   begin =
     pure (Set.empty, Nothing)
@@ -453,21 +453,19 @@ firstOccWithin tickInterval timeThreshold src
       (FL.Fold step begin end)
       srcWithTicker
   where
-  step (x, _) (a, (up, down)) =
+  step (!x, _) (!a, (!up, !down)) =
     pure (if ZSet.zMember a newX then (newX, Nothing) else (ZSet.zAdd a up newX, Just a))
     where
       newX = if down == 0 then ZSet.zRangeGTByScore (up - timeThreshold) x else x
   begin =
     pure (ZSet.zempty, Nothing)
   end = pure . snd
-
   ticker =
     SP.mapM (<$ liftIO (threadDelay tickInterval)) $
     SP.fromFoldable $
     zip [0..] (cycle [timeThreshold, timeThreshold - 1 .. 0])
-
   srcWithTicker =
-    src `applyWithLatest` ((\i a -> (a, i)) <$> ticker)
+    src `applyWithLatest` ((\(!i) (!a) -> (a, i)) <$> ticker)
 
 groupConsecutiveBy
   :: Eq b
