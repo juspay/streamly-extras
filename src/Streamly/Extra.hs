@@ -187,7 +187,6 @@ distributeAsync_ fs src = foldr Par.tapAsync src fs
 duplicate
   :: S.MonadAsync m
   => S.IsStream t
-  => Monad (t m)
   => t m a
   -> m (t m a, t m a)
 duplicate src = do
@@ -262,7 +261,6 @@ firstOcc =
 sampleOn
   :: S.MonadAsync m
   => S.IsStream t
-  => Monad (t m)
   => t m a
   -> t m (a -> b)
   -> t m b
@@ -276,15 +274,15 @@ sampleOn src pulse =
   fld = FL.Fold step begin done
   -- First is the latest value of source,
   -- second is the value which to be yield'ed
-  step _ (Left a) = pure (Just a, Nothing)
-  step (x, _) (Right f) = pure (x, f <$> x)
+  step _ (Left !a) = pure (Just a, Nothing)
+  step (!x, _) (Right !f) = pure (x, f <$> x)
   begin = pure (Nothing, Nothing)
   done (_, out) = pure out
 
+{-# INLINE applyWithLatestM #-}
 applyWithLatestM
   :: S.MonadAsync m
   => S.IsStream t
-  => Monad (t m)
   => (a -> b -> m c)
   -> t m a
   -> t m b
@@ -293,14 +291,19 @@ applyWithLatestM f s1 s2 =
   SP.mapMaybe id $
     SP.scan fld combined
   where
+  {-# INLINE combined #-}
   combined =
     runTillEndOfEitherWith
-      S.parallel (Left <$> s1) (Right <$> s2)
+      S.async (Left <$> s1) (Right <$> s2)
+  {-# INLINE fld #-}
   fld = FL.Fold step begin done
+  {-# INLINE begin #-}
   begin = pure (Nothing, Nothing)
-  step (Just b, _) (Left !a) = (Just b,) . Just <$> f a b
+  {-# INLINE step #-}
+  step (Just !b, _) (Left !a) = (Just b,) . Just <$> f a b
   step (Nothing, _) (Left _) = pure (Nothing, Nothing)
   step _ (Right !b) = pure (Just b, Nothing)
+  {-# INLINE done #-}
   done (_, !out) = pure out
 -- | Stream which produces values as fast as the faster stream(the first argument)
 --   using the latest value from the slower stream(the second argument)
@@ -332,15 +335,15 @@ applyWithLatestM f s1 s2 =
 --   (28,30)
 --   (30,32)
 --   (32,30)
+{-# INLINE applyWithLatest #-}
 applyWithLatest
   :: S.MonadAsync m
   => S.IsStream t
-  => Monad (t m)
   => t m a
   -> t m (a -> b)
   -> t m b
 applyWithLatest =
-  applyWithLatestM (\a f -> pure $ f a)
+  applyWithLatestM (\(!a) (!f) -> pure $ f a)
 
 -- | Stream which races a function stream and a argument stream
 --   and uses the latest value of the other stream whenever any of the stream yields a value
@@ -401,7 +404,6 @@ applyWithLatest =
 zipAsyncly'
   :: S.MonadAsync m
   => S.IsStream t
-  => Monad (t m)
   => t m a
   -> t m (a -> b)
   -> t m b
@@ -441,7 +443,6 @@ firstOccWithin
   :: Ord a
   => S.MonadAsync m
   => S.IsStream t
-  => Monad (t m)
   => Int
   -> Int
   -> t m a
@@ -514,7 +515,6 @@ withRateGaugeWithElements
   . Applicative m
   => S.MonadAsync m
   => S.IsStream t
-  => Monad (t m)
   => MonadReader (LoggerConfig tag) (t m)
   => Ord tag
   => (a -> tag)
@@ -545,7 +545,6 @@ withRateGauge
   . Applicative m
   => S.MonadAsync m
   => S.IsStream t
-  => Monad (t m)
   => MonadReader (LoggerConfig tag) (t m)
   => Ord tag
   => tag
@@ -558,7 +557,6 @@ withThroughputGauge
   . Applicative m
   => S.MonadAsync m
   => S.IsStream t
-  => Monad (t m)
   => tag
   -> Logger tag
   -> (t m a -> t m b)
@@ -579,21 +577,21 @@ withThroughputGauge tag recordMeasurement f =
     withTimer = (Just <$> src) `S.parallel` (Nothing <$ timeout)
     timeout = SP.repeatM $ liftIO $ threadDelay 1000000
 
+{-# INLINE runTillEndOfEitherWith #-}
 runTillEndOfEitherWith
   :: forall t m a
   . S.IsStream t
   => Monad m
-  => Functor (t m)
   => (forall c. t m c -> t m c -> t m c)
   -> t m a
   -> t m a
   -> t m a
 runTillEndOfEitherWith combine src1 src2 =
   SP.mapMaybe id $
-  SP.takeWhile isJust $
-    ((Just <$> src1) `S.serial` SP.yield Nothing)
-      `combine`
-    ((Just <$> src2) `S.serial` SP.yield Nothing)
+    SP.takeWhile isJust $
+      ((Just <$> src1) `S.serial` SP.yield Nothing)
+        `combine`
+      ((Just <$> src2) `S.serial` SP.yield Nothing)
 
 compress
  :: forall t m
