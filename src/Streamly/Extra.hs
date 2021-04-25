@@ -552,6 +552,15 @@ withRateGauge
   -> t m a
 withRateGauge !tag = withRateGaugeWithElements (const tag)
 
+-- Does @action at @interval and returns the stream as is
+doAt :: (Monad m, S.IsStream t) => Int -> (a -> m ()) -> t m a -> t m a
+doAt interval action = SP.tap (FL.Fold step begin end)
+  where
+    step 0 a = action a $> interval
+    step n _ = pure (n - 1)
+    begin = pure interval
+    end = const (pure ())
+
 withThroughputGauge
   :: forall t m a b tag
   . Applicative m
